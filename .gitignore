@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+*.whl
+.venv/
+venv/
+.env
+.env.*
+*.env
+
+# Node
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+.pnp.*
+
+# Build outputs
+/dist/
+/build/
+/frontend/dist/
+/backend/dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Databases / local state
+*.sqlite
+*.db
+
+# Coverage
+coverage/
+.coverage
+
+# Uvicorn/pytest caches
+.pytest_cache/
