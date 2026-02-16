@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "6628"
+      POSTGRES_DB: threading_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - threading_bot_pg:/var/lib/postgresql/data
+
+volumes:
+  threading_bot_pg:
