@@ -5,6 +5,7 @@ import pandas as pd
 
 class BaseStrategy:
     name = "base"
+    is_mtf: bool = False
 
-    def evaluate(self, data: pd.DataFrame) -> dict | None:
+    def evaluate(self, data: pd.DataFrame, context: dict | None = None) -> dict | None:
         raise NotImplementedError

@@ -28,6 +28,11 @@ class BacktestStatsRead(BaseSchema):
     avg_pnl: float
     profit_factor: float | None
     max_drawdown: float
+    max_drawdown_pct: float
+    expectancy_pct: float
+    sharpe: float | None
+    cagr_pct: float | None
+    ending_equity: float
 
 
 class BacktestResponse(BaseSchema):

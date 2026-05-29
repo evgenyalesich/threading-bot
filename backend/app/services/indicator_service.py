@@ -72,3 +72,32 @@ class IndicatorService:
         upper = middle + std_dev * std
         lower = middle - std_dev * std
         return upper.fillna(0), middle.fillna(0), lower.fillna(0)
+
+    def stochastic(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        k_period: int = 5,
+        d_period: int = 3,
+        smooth_k: int = 3,
+    ) -> tuple[pd.Series, pd.Series]:
+        if talib:
+            slowk, slowd = talib.STOCH(
+                high.to_numpy(dtype=float),
+                low.to_numpy(dtype=float),
+                close.to_numpy(dtype=float),
+                fastk_period=k_period,
+                slowk_period=smooth_k,
+                slowk_matype=0,
+                slowd_period=d_period,
+                slowd_matype=0,
+            )
+            idx = close.index
+            return pd.Series(slowk, index=idx).fillna(50), pd.Series(slowd, index=idx).fillna(50)
+        lowest_low = low.rolling(window=k_period).min()
+        highest_high = high.rolling(window=k_period).max()
+        raw_k = 100 * (close - lowest_low) / (highest_high - lowest_low).replace(0, pd.NA)
+        slow_k = raw_k.fillna(50).rolling(window=smooth_k).mean().fillna(50)
+        slow_d = slow_k.rolling(window=d_period).mean().fillna(50)
+        return slow_k, slow_d

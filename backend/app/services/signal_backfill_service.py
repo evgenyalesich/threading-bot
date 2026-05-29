@@ -34,19 +34,39 @@ class SignalBackfillService:
         limit = lookback
         if max_bars > 0 and max_bars < lookback:
             limit = max_bars
+        min_bars = getattr(self._strategy, "min_bars", 210)
         candles = await self._candle_repository.latest(symbol, timeframe, limit=limit)
-        if len(candles) < 210:
+        if len(candles) < min_bars:
             return 0
+
+        # MTF: load trend data once before the loop
+        h1_data_indexed: pd.DataFrame | None = None
+        if getattr(self._strategy, "is_mtf", False):
+            trend_tf = getattr(self._strategy, "trend_timeframe", None) or getattr(self._strategy, "h1_timeframe", "1h")
+            trend_candles = await self._candle_repository.latest(symbol, trend_tf, limit=5000)
+            if trend_candles:
+                trend_df = candles_to_df(trend_candles)
+                h1_data_indexed = trend_df.set_index("open_time")
 
         existing_times = await self._signal_repository.list_times(symbol, timeframe)
         known = {time for time in existing_times}
 
         inserted = 0
-        start_index = 210
+        start_index = min_bars
         for index in range(start_index, len(candles), max(stride, 1)):
             window = candles[: index + 1]
             data = candles_to_df(window)
-            signal_payload = self._strategy.evaluate(data)
+            context: dict | None = None
+            if h1_data_indexed is not None:
+                last_time = window[-1].open_time
+                trend_slice = h1_data_indexed[h1_data_indexed.index <= last_time]
+                if len(trend_slice) >= 30:
+                    trend_df_slice = trend_slice.reset_index()
+                    context = {
+                        "trend_data": trend_df_slice,
+                        "h1_data": trend_df_slice,  # legacy compat
+                    }
+            signal_payload = self._strategy.evaluate(data, context)
             if not signal_payload:
                 continue
 

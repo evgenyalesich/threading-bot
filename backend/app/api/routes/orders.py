@@ -9,6 +9,7 @@ from app.schemas.order_create import OrderCreate
 from app.schemas.order_read import OrderRead
 from app.schemas.order_stop_update import OrderStopUpdate
 from app.services.binance_market_service import BinanceMarketService
+from app.services.binance_credentials import resolve_api_credentials
 from app.services.execution_service import ExecutionService
 from app.services.order_sizing_service import OrderSizingService
 
@@ -24,22 +25,12 @@ async def create_order(
 ) -> OrderRead:
     order_repo = OrderRepository(session)
     trade_env = (payload.trade_env or "testnet").lower()
-    trade_settings = settings.model_copy(update={"binance_testnet": trade_env == "testnet"})
+    market = payload.market.lower()
+    api_key, api_secret, trade_settings = resolve_api_credentials(settings, trade_env, market)
     exchange = None
-    api_key = (
-        trade_settings.binance_testnet_api_key
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_key
-    )
-    api_secret = (
-        trade_settings.binance_testnet_api_secret
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_secret
-    )
     if api_key and api_secret:
         exchange = BinanceExchange(trade_settings)
 
-    market = payload.market.lower()
     if payload.auto_quantity or payload.quote_amount is not None:
         if payload.quote_amount is None:
             raise HTTPException(status_code=400, detail="quote_amount_required")
@@ -82,18 +73,8 @@ async def move_to_breakeven(
         raise HTTPException(status_code=400, detail="entry_price_required")
 
     trade_env = (order.trade_env or "testnet").lower()
-    trade_settings = settings.model_copy(update={"binance_testnet": trade_env == "testnet"})
+    api_key, api_secret, trade_settings = resolve_api_credentials(settings, trade_env, order.market)
     exchange = None
-    api_key = (
-        trade_settings.binance_testnet_api_key
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_key
-    )
-    api_secret = (
-        trade_settings.binance_testnet_api_secret
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_secret
-    )
     if api_key and api_secret:
         exchange = BinanceExchange(trade_settings)
 
@@ -158,18 +139,8 @@ async def move_stop(
         raise HTTPException(status_code=400, detail="stop_price_required")
 
     trade_env = (order.trade_env or "testnet").lower()
-    trade_settings = settings.model_copy(update={"binance_testnet": trade_env == "testnet"})
+    api_key, api_secret, trade_settings = resolve_api_credentials(settings, trade_env, order.market)
     exchange = None
-    api_key = (
-        trade_settings.binance_testnet_api_key
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_key
-    )
-    api_secret = (
-        trade_settings.binance_testnet_api_secret
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_secret
-    )
     if api_key and api_secret:
         exchange = BinanceExchange(trade_settings)
 

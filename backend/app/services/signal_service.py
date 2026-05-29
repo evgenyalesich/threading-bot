@@ -27,8 +27,18 @@ class SignalService:
             return None
 
         data = candles_to_df(candles)
+        context: dict | None = None
 
-        signal_payload = self._strategy.evaluate(data)
+        if getattr(self._strategy, "is_mtf", False):
+            trend_tf = getattr(self._strategy, "trend_timeframe", None) or getattr(self._strategy, "h1_timeframe", "1h")
+            trend_candles = await self._candle_repository.latest(symbol, trend_tf, limit=300)
+            if trend_candles:
+                context = {
+                    "trend_data": candles_to_df(trend_candles),
+                    "h1_data": candles_to_df(trend_candles),  # legacy compat
+                }
+
+        signal_payload = self._strategy.evaluate(data, context)
         if not signal_payload:
             return None
 

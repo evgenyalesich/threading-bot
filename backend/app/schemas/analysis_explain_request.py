@@ -6,6 +6,7 @@ class AnalysisExplainRequest(BaseSchema):
     timeframe: str
     lookback_days: int = 120
     market: str = "spot"
+    h1_timeframe: str = "1h"
     data_env: str = "real"
     min_confidence: float = 0.5
     min_confirmations: int = 2

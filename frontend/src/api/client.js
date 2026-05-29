@@ -201,3 +201,9 @@ export async function fetchAccountSummary(market = "spot", tradeEnv = "testnet")
   const params = new URLSearchParams({ market, trade_env: tradeEnv });
   return request(`/account/summary?${params.toString()}`);
 }
+
+export async function fetchAccountTrades(market = "spot", tradeEnv = "testnet", symbol, limit = 50) {
+  const params = new URLSearchParams({ market, trade_env: tradeEnv, limit: String(limit) });
+  if (symbol) params.set("symbol", symbol);
+  return request(`/account/trades?${params.toString()}`);
+}

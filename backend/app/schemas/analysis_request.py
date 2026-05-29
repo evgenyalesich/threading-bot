@@ -5,7 +5,9 @@ class AnalysisRequest(BaseSchema):
     symbol: str
     timeframe: str
     lookback_days: int = 120
-    strategy: str = "ema200_fib_divergence"
+    strategy: str = "three_screens"
+    h1_timeframe: str = "1h"      # Entry signal timeframe (Screen 2+3)
+    trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
     market: str = "spot"
     auto_execute: bool = False
     trade_env: str = "testnet"
@@ -16,8 +18,8 @@ class AnalysisRequest(BaseSchema):
     attach_orders: bool = True
     auto_breakeven: bool = True
     leverage: int | None = None
-    min_confidence: float = 0.5
-    min_confirmations: int = 2
+    min_confidence: float = 0.45
+    min_confirmations: int = 1
     require_pattern: bool = False
     require_divergence: bool = False
     require_candle: bool = False

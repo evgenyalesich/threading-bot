@@ -25,22 +25,15 @@ from app.services.binance_candle_service import BinanceCandleService
 from app.services.binance_market_service import BinanceMarketService
 from app.services.market_data_service import MarketDataService
 from app.services.backtest_service import BacktestService
-from app.services.chart_pattern_service import ChartPatternService
 from app.services.execution_service import ExecutionService
 from app.services.market_scan_service import MarketScanService
 from app.services.order_sizing_service import OrderSizingService
-from app.services.divergence_service import DivergenceService
-from app.services.elliott_wave_service import ElliottWaveService
-from app.services.fibonacci_service import FibonacciService
 from app.services.indicator_service import IndicatorService
-from app.services.pattern_service import PatternService
-from app.services.risk_service import RiskService
 from app.services.signal_service import SignalService
-from app.services.support_resistance_service import SupportResistanceService
 from app.services.symbol_resolver_service import SymbolResolverService
 from app.services.signal_backfill_service import SignalBackfillService
-from app.services.trade_plan_service import TradePlanService
-from app.strategies.ema200_fib_divergence_strategy import Ema200FibDivergenceStrategy
+from app.services.binance_credentials import resolve_api_credentials
+from app.strategies.three_screens_strategy import ThreeScreensStrategy
 from app.strategies.strategy_filters import StrategyFilters
 from app.utils.candle_frame import candles_to_df
 
@@ -72,17 +65,15 @@ def _strategy_filters_from_payload(payload) -> StrategyFilters:
     )
 
 
-def _build_strategy(filters: StrategyFilters) -> Ema200FibDivergenceStrategy:
-    return Ema200FibDivergenceStrategy(
+def _build_strategy(
+    filters: StrategyFilters,
+    h1_timeframe: str = "1h",
+    trend_timeframe: str | None = None,
+) -> ThreeScreensStrategy:
+    return ThreeScreensStrategy(
         indicator_service=IndicatorService(),
-        pattern_service=PatternService(),
-        chart_pattern_service=ChartPatternService(),
-        divergence_service=DivergenceService(),
-        support_resistance_service=SupportResistanceService(),
-        fibonacci_service=FibonacciService(),
-        elliott_wave_service=ElliottWaveService(),
-        risk_service=RiskService(),
-        trade_plan_service=TradePlanService(),
+        trend_timeframe=trend_timeframe or "4h",
+        h1_timeframe=h1_timeframe,
         filters=filters,
     )
 
@@ -96,17 +87,10 @@ async def run_analysis(
     candle_repo = CandleRepository(session)
     signal_repo = SignalRepository(session)
 
-    strategy = Ema200FibDivergenceStrategy(
-        indicator_service=IndicatorService(),
-        pattern_service=PatternService(),
-        chart_pattern_service=ChartPatternService(),
-        divergence_service=DivergenceService(),
-        support_resistance_service=SupportResistanceService(),
-        fibonacci_service=FibonacciService(),
-        elliott_wave_service=ElliottWaveService(),
-        risk_service=RiskService(),
-        trade_plan_service=TradePlanService(),
-        filters=_strategy_filters_from_payload(payload),
+    strategy = _build_strategy(
+        _strategy_filters_from_payload(payload),
+        h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
+        trend_timeframe=getattr(payload, "trend_timeframe", None),
     )
     signal_service = SignalService(candle_repo, signal_repo, strategy)
 
@@ -152,16 +136,7 @@ async def run_analysis(
 
     order_repo = OrderRepository(session)
     exchange = None
-    api_key = (
-        trade_settings.binance_testnet_api_key
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_key
-    )
-    api_secret = (
-        trade_settings.binance_testnet_api_secret
-        if trade_settings.binance_testnet
-        else trade_settings.binance_api_secret
-    )
+    api_key, api_secret, _ = resolve_api_credentials(settings, trade_env, market)
     if api_key and api_secret:
         exchange = BinanceExchange(trade_settings)
     execution_service = ExecutionService(order_repo, exchange)
@@ -200,7 +175,11 @@ async def backfill_signals(
     candle_repo = CandleRepository(session)
     signal_repo = SignalRepository(session)
 
-    strategy = _build_strategy(_strategy_filters_from_payload(payload))
+    strategy = _build_strategy(
+        _strategy_filters_from_payload(payload),
+        h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
+        trend_timeframe=getattr(payload, "trend_timeframe", None),
+    )
     backfill_service = SignalBackfillService(candle_repo, signal_repo, strategy)
 
     lookback = payload.lookback_days * _candles_per_day(payload.timeframe)
@@ -222,7 +201,11 @@ async def scan_market(
     candle_repo = CandleRepository(session)
     signal_repo = SignalRepository(session)
 
-    strategy = _build_strategy(_strategy_filters_from_payload(payload))
+    strategy = _build_strategy(
+        _strategy_filters_from_payload(payload),
+        h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
+        trend_timeframe=getattr(payload, "trend_timeframe", None),
+    )
 
     data_env = payload.data_env.lower()
     effective_settings = settings.model_copy(update={"binance_testnet": data_env == "testnet"})
@@ -282,23 +265,39 @@ async def backtest_strategy(
         resolved = await resolver.resolve(payload.symbol.upper(), market)
         if resolved:
             binance_symbol = resolved
-        await MarketDataService(candle_repo, BinanceCandleService(effective_settings)).sync_history(
+        mds = MarketDataService(candle_repo, BinanceCandleService(effective_settings))
+        await mds.sync_history(
             payload.symbol.upper(),
             payload.timeframe,
             payload.lookback_days,
             market=market,
             binance_symbol=binance_symbol,
         )
+        # Also sync trend timeframe for MTF strategies
+        trend_tf = getattr(payload, "trend_timeframe", None) or "4h"
+        if trend_tf != payload.timeframe:
+            await mds.sync_history(
+                payload.symbol.upper(),
+                trend_tf,
+                payload.lookback_days,
+                market=market,
+                binance_symbol=binance_symbol,
+            )
 
-    strategy = _build_strategy(_strategy_filters_from_payload(payload))
+    strategy = _build_strategy(
+        _strategy_filters_from_payload(payload),
+        h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
+        trend_timeframe=getattr(payload, "trend_timeframe", None),
+    )
 
     cpd = _candles_per_day(payload.timeframe)
     desired_bars = payload.lookback_days * cpd
     # Protect local runs from accidentally requesting hundreds of thousands of 1m candles.
     effective_max_bars = max(int(payload.max_bars or 0), int(desired_bars))
     effective_max_bars = min(effective_max_bars, 50_000)
-    # Strategy window: enough for EMA200 + some context, but not tied to "lookback_days".
-    window_bars = max(210, min(int(cpd * 10), 1200))
+    # Strategy window: enough for Three Screens + some context.
+    min_window = getattr(strategy, "min_bars", 30)
+    window_bars = max(min_window, min(int(cpd * 10), 1200))
     if effective_max_bars > 2:
         window_bars = min(window_bars, effective_max_bars - 2)
     trades, stats = await BacktestService(candle_repo, strategy).run(
@@ -307,6 +306,11 @@ async def backtest_strategy(
         window_bars=window_bars,
         max_bars=effective_max_bars,
         stride=payload.stride,
+        initial_equity=payload.initial_equity,
+        risk_per_trade=payload.risk_per_trade,
+        fee_bps=payload.fee_bps,
+        slippage_bps=payload.slippage_bps,
+        intra_candle_mode=(payload.intra_candle_mode or "pessimistic").lower(),
     )
 
     return BacktestResponse(
@@ -328,7 +332,21 @@ async def explain_analysis(
         return AnalysisExplainResponse(status="no_data", debug={"reasons": ["no_candles_in_db"]})
 
     data = candles_to_df(candles)
-    strategy = _build_strategy(_strategy_filters_from_payload(payload))
-    debug = strategy.explain(data)
+    strategy = _build_strategy(
+        _strategy_filters_from_payload(payload),
+        h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
+        trend_timeframe=getattr(payload, "trend_timeframe", None),
+    )
+    context: dict | None = None
+    if getattr(strategy, "is_mtf", False):
+        trend_tf = getattr(strategy, "trend_timeframe", None) or getattr(strategy, "h1_timeframe", "1h")
+        trend_candles = await candle_repo.latest(payload.symbol.upper(), trend_tf, limit=300)
+        if trend_candles:
+            trend_df = candles_to_df(trend_candles)
+            context = {
+                "trend_data": trend_df,
+                "h1_data": trend_df,  # legacy compat
+            }
+    debug = strategy.explain(data, context)
     status = "ok" if not debug.get("reasons") else "no_signal"
     return AnalysisExplainResponse(status=status, debug=debug)

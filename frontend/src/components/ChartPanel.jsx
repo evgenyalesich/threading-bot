@@ -11,6 +11,17 @@ function toChartData(candles) {
   }));
 }
 
+function uniqueAscByTime(items) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const byTime = new Map();
+  items.forEach((item) => {
+    const t = Number(item?.time);
+    if (!Number.isFinite(t)) return;
+    byTime.set(t, { ...item, time: t });
+  });
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
 function resolvePrecision(candles, pricePrecision) {
   if (Number.isFinite(pricePrecision) && pricePrecision > 0) {
     return Math.min(Math.max(pricePrecision, 2), 10);
@@ -231,7 +242,7 @@ export default function ChartPanel({
   const overlayRef = useRef(null);
   const loadMoreLockRef = useRef(false);
 
-  const chartData = useMemo(() => toChartData(candles), [candles]);
+  const chartData = useMemo(() => uniqueAscByTime(toChartData(candles)), [candles]);
   const precision = useMemo(
     () => resolvePrecision(candles, pricePrecision),
     [candles, pricePrecision]
@@ -565,33 +576,33 @@ export default function ChartPanel({
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    seriesRef.current.setData(chartData);
+    seriesRef.current.setData(uniqueAscByTime(chartData));
     if (emaRef.current) {
-      emaRef.current.setData(emaData);
+      emaRef.current.setData(uniqueAscByTime(emaData));
       emaRef.current.applyOptions({ visible: showEma });
     }
     if (bbUpperRef.current) {
-      bbUpperRef.current.setData(bbands?.upper ?? []);
+      bbUpperRef.current.setData(uniqueAscByTime(bbands?.upper ?? []));
       bbUpperRef.current.applyOptions({ visible: showBBands });
     }
     if (bbMiddleRef.current) {
-      bbMiddleRef.current.setData(bbands?.middle ?? []);
+      bbMiddleRef.current.setData(uniqueAscByTime(bbands?.middle ?? []));
       bbMiddleRef.current.applyOptions({ visible: showBBands });
     }
     if (bbLowerRef.current) {
-      bbLowerRef.current.setData(bbands?.lower ?? []);
+      bbLowerRef.current.setData(uniqueAscByTime(bbands?.lower ?? []));
       bbLowerRef.current.applyOptions({ visible: showBBands });
     }
     if (volumeRef.current) {
-      volumeRef.current.setData(volumeData);
+      volumeRef.current.setData(uniqueAscByTime(volumeData));
       volumeRef.current.applyOptions({ visible: showVolume });
     }
     if (atrRef.current) {
-      atrRef.current.setData(atrData);
+      atrRef.current.setData(uniqueAscByTime(atrData));
       atrRef.current.applyOptions({ visible: showAtr });
     }
     if (rsiRef.current) {
-      rsiRef.current.setData(rsiData);
+      rsiRef.current.setData(uniqueAscByTime(rsiData));
       rsiRef.current.applyOptions({ visible: showRsi });
     }
   }, [
@@ -703,8 +714,7 @@ export default function ChartPanel({
         text: item.signal_type.toUpperCase(),
       });
     });
-    markers.sort((a, b) => a.time - b.time);
-    seriesRef.current.setMarkers(markers);
+    seriesRef.current.setMarkers(uniqueAscByTime(markers));
   }, [
     signals,
     divergenceMarkers,
@@ -793,7 +803,7 @@ export default function ChartPanel({
         priceLineVisible: false,
         lastValueVisible: false,
       });
-      series.setData(line.points);
+      series.setData(uniqueAscByTime(line.points));
       return series;
     });
   }, [patternLines, showChartPatterns]);

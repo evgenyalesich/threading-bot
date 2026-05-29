@@ -24,6 +24,7 @@ import {
   fetchSignals,
   explainAnalysis,
   fetchAccountSummary,
+  fetchAccountTrades,
   moveStopToBreakeven,
   moveStopToPrice,
   placeOrder,
@@ -191,6 +192,9 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [indicatorData, setIndicatorData] = useState(null);
   const [mode, setMode] = useState("semi");
+  const [h1Timeframe, setH1Timeframe] = useState("1h");
+  const [trendTimeframe, setTrendTimeframe] = useState("4h");
+
   const [status, setStatus] = useState("Ожидание");
   const [sidebarWidth, setSidebarWidth] = useState(360);
   const [chartHeight, setChartHeight] = useState(520);
@@ -231,6 +235,7 @@ export default function App() {
   const [backtestRunning, setBacktestRunning] = useState(false);
   const [analysisDebug, setAnalysisDebug] = useState(null);
   const [accountSummary, setAccountSummary] = useState(null);
+  const [accountTrades, setAccountTrades] = useState([]);
   const [leverage, setLeverage] = useState(10);
   const [fitRequest, setFitRequest] = useState(0);
   const syncAttemptsRef = useRef(new Set());
@@ -322,8 +327,13 @@ export default function App() {
       try {
         const summary = await fetchAccountSummary(market, tradeEnv);
         if (active) setAccountSummary(summary);
+        const trades = await fetchAccountTrades(market, tradeEnv, binanceSymbol, 50);
+        if (active) setAccountTrades(trades?.trades ?? []);
       } catch (e) {
-        if (active) setAccountSummary({ status: "error", market, trade_env: tradeEnv, error: e?.message ?? "ошибка" });
+        if (active) {
+          setAccountSummary({ status: "error", market, trade_env: tradeEnv, error: e?.message ?? "ошибка" });
+          setAccountTrades([]);
+        }
       }
     }
     loadAccount();
@@ -332,7 +342,7 @@ export default function App() {
       active = false;
       clearInterval(interval);
     };
-  }, [market, tradeEnv]);
+  }, [market, tradeEnv, binanceSymbol]);
 
   useEffect(() => {
     async function load() {
@@ -617,6 +627,8 @@ export default function App() {
     setStatus("Синхронизация истории...");
     try {
       await syncMarket(symbol, timeframe, lookbackDays, market, binanceSymbol, dataEnv);
+      await syncMarket(symbol, h1Timeframe, lookbackDays, market, binanceSymbol, dataEnv);
+      await syncMarket(symbol, trendTimeframe, lookbackDays, market, binanceSymbol, dataEnv);
       const data = await fetchCandles(symbol, timeframe, chartLimit);
       setCandles(data);
       setStatus(data.length ? "История синхронизирована" : "История отсутствует");
@@ -669,6 +681,8 @@ export default function App() {
         attachOrders,
         autoBreakeven,
         {
+          h1_timeframe: h1Timeframe,
+          trend_timeframe: trendTimeframe,
           min_confidence: minConfidence,
           min_confirmations: minConfirmations,
           require_pattern: requirePattern,
@@ -747,6 +761,8 @@ export default function App() {
         market,
         data_env: dataEnv,
         auto_sync: false,
+        h1_timeframe: h1Timeframe,
+        trend_timeframe: trendTimeframe,
         min_confidence: minConfidence,
         min_confirmations: minConfirmations,
         require_pattern: requirePattern,
@@ -893,6 +909,8 @@ export default function App() {
         lookback_days: lookbackDays,
         quote: quoteAsset === "ALL" ? "" : quoteAsset,
         data_env: dataEnv,
+        h1_timeframe: h1Timeframe,
+        trend_timeframe: trendTimeframe,
         min_volatility: minVolatility,
         max_pairs: scanMaxPairs,
         limit: scanLimit,
@@ -967,6 +985,8 @@ export default function App() {
                 <option value="1m">1m</option>
                 <option value="5m">5m</option>
                 <option value="15m">15m</option>
+                <option value="1h">1h</option>
+                <option value="4h">4h</option>
               </select>
               <button
                 type="button"
@@ -1123,6 +1143,10 @@ export default function App() {
               onRequireDivergenceChange={setRequireDivergence}
               onRequireCandleChange={setRequireCandle}
               onRequireVolumeConfirmChange={setRequireVolumeConfirm}
+              h1Timeframe={h1Timeframe}
+              onH1TimeframeChange={setH1Timeframe}
+              trendTimeframe={trendTimeframe}
+              onTrendTimeframeChange={setTrendTimeframe}
               onBacktest={handleBacktest}
               backtestRunning={backtestRunning}
               onSync={handleSync}
@@ -1178,7 +1202,7 @@ export default function App() {
               </button>
             ) : null}
             <StatsPanel stats={activeStats} />
-            <AccountPanel summary={accountSummary} />
+            <AccountPanel summary={accountSummary} trades={accountTrades} />
             <AnalysisDebugPanel debug={analysisDebug} />
             <div className="signals-panel">
               <div className="signals-title">Сигналы</div>

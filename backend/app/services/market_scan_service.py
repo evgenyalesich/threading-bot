@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pandas as pd
@@ -63,25 +64,51 @@ class MarketScanService:
         filtered.sort(key=lambda item: item.get("volatility_score", 0), reverse=True)
         filtered = filtered[:max_pairs]
 
+        # Sync all entry + trend timeframes in parallel before processing
+        if auto_sync and filtered:
+            trend_tf = (
+                getattr(self._strategy, "trend_timeframe", None)
+                or getattr(self._strategy, "h1_timeframe", "1h")
+            ) if getattr(self._strategy, "is_mtf", False) else None
+
+            sync_tasks = []
+            for pair in filtered:
+                symbol = pair["symbol"]
+                # Sync entry timeframe
+                sync_tasks.append(
+                    self._safe_sync(symbol, timeframe, lookback_days, market, pair.get("symbol"))
+                )
+                # Sync trend timeframe if MTF strategy needs it
+                if trend_tf and trend_tf != timeframe:
+                    sync_tasks.append(
+                        self._safe_sync(symbol, trend_tf, lookback_days, market, pair.get("symbol"))
+                    )
+            # Run all syncs concurrently (cap at 10 at a time to avoid overloading Binance)
+            sem = asyncio.Semaphore(10)
+            async def _limited(coro):
+                async with sem:
+                    return await coro
+            await asyncio.gather(*[_limited(t) for t in sync_tasks])
+
         results: list[ScanResultItem] = []
         for pair in filtered:
             symbol = pair["symbol"]
             candles = await self._candle_repository.latest(symbol, timeframe, limit=lookback)
-            if len(candles) < lookback and auto_sync:
-                await self._market_data_service.sync_history(
-                    symbol,
-                    timeframe,
-                    lookback_days=lookback_days,
-                    market=market,
-                    binance_symbol=pair.get("symbol"),
-                )
-                candles = await self._candle_repository.latest(symbol, timeframe, limit=lookback)
             if len(candles) < lookback:
                 continue
 
             data = candles_to_df(candles)
+            context: dict | None = None
+            if getattr(self._strategy, "is_mtf", False):
+                trend_tf = getattr(self._strategy, "trend_timeframe", None) or getattr(self._strategy, "h1_timeframe", "1h")
+                trend_candles = await self._candle_repository.latest(symbol, trend_tf, limit=300)
+                if trend_candles:
+                    context = {
+                        "trend_data": candles_to_df(trend_candles),
+                        "h1_data": candles_to_df(trend_candles),  # legacy compat
+                    }
 
-            signal_payload = self._strategy.evaluate(data)
+            signal_payload = self._strategy.evaluate(data, context)
             if not signal_payload:
                 continue
 
@@ -127,3 +154,23 @@ class MarketScanService:
 
         results.sort(key=lambda item: item.rank, reverse=True)
         return results[:limit]
+
+    async def _safe_sync(
+        self,
+        symbol: str,
+        timeframe: str,
+        lookback_days: int,
+        market: str,
+        binance_symbol: str | None,
+    ) -> None:
+        """Sync history for a symbol+timeframe, swallowing errors."""
+        try:
+            await self._market_data_service.sync_history(
+                symbol,
+                timeframe,
+                lookback_days=lookback_days,
+                market=market,
+                binance_symbol=binance_symbol or symbol,
+            )
+        except Exception:
+            pass

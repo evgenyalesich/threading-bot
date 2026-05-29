@@ -11,7 +11,7 @@ function humanizeAccountError(code) {
   return map[code] || code;
 }
 
-export default function AccountPanel({ summary }) {
+export default function AccountPanel({ summary, trades = [] }) {
   return (
     <div className="account-panel">
       <div className="panel-title">Баланс</div>
@@ -76,6 +76,19 @@ export default function AccountPanel({ summary }) {
             </div>
           ))}
           {!summary.futures_positions?.length ? <div className="empty-state">Позиции отсутствуют</div> : null}
+        </div>
+      ) : null}
+      {summary?.status === "ok" ? (
+        <div className="account-list">
+          <div className="account-subtitle">Последние сделки</div>
+          {trades.slice(0, 8).map((t) => (
+            <div className="account-row" key={`${t.id ?? t.orderId ?? "t"}-${t.time ?? t.symbol}`}>
+              <strong>{t.symbol || "-"}</strong>
+              <span>{t.side || t.positionSide || "-"}</span>
+              <span>{t.qty || t.executedQty || t.size || "-"}</span>
+            </div>
+          ))}
+          {!trades.length ? <div className="empty-state">История сделок пуста</div> : null}
         </div>
       ) : null}
     </div>

@@ -87,6 +87,10 @@ export default function ControlPanel({
   onRequireDivergenceChange,
   onRequireCandleChange,
   onRequireVolumeConfirmChange,
+  h1Timeframe,
+  onH1TimeframeChange,
+  trendTimeframe,
+  onTrendTimeframeChange,
   onBacktest,
   backtestRunning,
   onSync,
@@ -208,6 +212,25 @@ export default function ControlPanel({
         />
         <span>Авто перенос SL в БУ (по TP1)</span>
       </label>
+      <details className="control-section" open>
+        <summary>Три экрана (стратегия)</summary>
+        <div className="control-group">
+          <label>Тренд (Экран 1 — 4H)</label>
+          <select value={trendTimeframe} onChange={(e) => onTrendTimeframeChange(e.target.value)}>
+            <option value="4h">4h</option>
+            <option value="1d">1d</option>
+            <option value="1h">1h</option>
+          </select>
+        </div>
+        <div className="control-group">
+          <label>Вход (Экраны 2+3 — 1H)</label>
+          <select value={h1Timeframe} onChange={(e) => onH1TimeframeChange(e.target.value)}>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+            <option value="15m">15m</option>
+          </select>
+        </div>
+      </details>
       <div className="control-actions">
         <button className="ghost" onClick={onSync}>
           Синхронизировать историю

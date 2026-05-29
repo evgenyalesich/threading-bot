@@ -800,69 +800,174 @@ button.ghost {
   font-size: 12px;
 }
 
+.scan-btn {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.scan-summary {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+
+.scan-summary-long {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.scan-summary-short {
+  color: #fb7185;
+  font-weight: 600;
+}
+
+.scan-summary-total {
+  color: var(--muted);
+  margin-left: auto;
+}
+
 .scan-results {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 260px;
+  gap: 6px;
+  max-height: 380px;
   overflow-y: auto;
+}
+
+.scan-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scan-group-header {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.05em;
+}
+
+.scan-group-long {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.scan-group-short {
+  color: #fb7185;
+  background: rgba(251, 113, 133, 0.1);
 }
 
 .scan-row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  border-radius: 14px;
-  padding: 12px;
+  gap: 6px;
+  border-radius: 10px;
+  padding: 10px 12px;
   background: rgba(8, 14, 24, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.15);
   color: var(--text);
   text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.scan-row:hover {
+  background: rgba(16, 28, 48, 0.95);
 }
 
 .scan-row.long {
-  border-color: rgba(34, 197, 94, 0.4);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.scan-row.long:hover {
+  border-color: rgba(34, 197, 94, 0.6);
 }
 
 .scan-row.short {
-  border-color: rgba(251, 113, 133, 0.4);
+  border-color: rgba(251, 113, 133, 0.3);
 }
 
-.scan-main {
+.scan-row.short:hover {
+  border-color: rgba(251, 113, 133, 0.6);
+}
+
+.scan-row-top {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
 }
 
-.scan-main strong {
-  display: block;
-  font-size: 13px;
-}
-
-.scan-main span {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.scan-metrics {
+.scan-row-symbol {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--accent);
-  text-align: right;
+  align-items: center;
+  gap: 6px;
+}
+
+.scan-row-symbol strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scan-direction {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scan-long {
+  color: #22c55e;
+}
+
+.scan-short {
+  color: #fb7185;
+}
+
+.scan-tf {
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.1);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.scan-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scan-rank {
+  font-size: 10px;
+  color: #eab308;
 }
 
 .scan-levels {
   display: flex;
   justify-content: space-between;
   font-size: 11px;
-  color: var(--muted);
+  gap: 4px;
 }
 
-.scan-rationale {
-  font-size: 10px;
-  color: rgba(148, 163, 184, 0.7);
+.scan-entry {
+  color: var(--text);
+}
+
+.scan-sl {
+  color: #fb7185;
+}
+
+.scan-tp {
+  color: #22c55e;
+}
+
+.scan-rr {
+  color: #eab308;
+  font-weight: 600;
 }
 
 .modal-backdrop {

@@ -5,6 +5,7 @@ import asyncio
 from fastapi import APIRouter, Query
 
 from app.core.settings import Settings
+from app.services.binance_credentials import resolve_api_credentials
 from app.schemas.account_summary import (
     AccountSummary,
     FuturesAssetItem,
@@ -16,31 +17,11 @@ from app.schemas.account_summary import (
 router = APIRouter()
 settings = Settings()
 
-def _clean_cred(value: str | None) -> str | None:
-    if not value:
-        return None
-    v = value.strip()
-    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-        v = v[1:-1].strip()
-    return v or None
-
 
 def _build_client(trade_env: str, market: str):
     trade_env = trade_env.lower()
     market = market.lower()
-    trade_settings = settings.model_copy(update={"binance_testnet": trade_env == "testnet"})
-    if trade_settings.binance_testnet:
-        if market == "futures":
-            api_key = trade_settings.binance_futures_testnet_api_key or trade_settings.binance_testnet_api_key
-            api_secret = trade_settings.binance_futures_testnet_api_secret or trade_settings.binance_testnet_api_secret
-        else:
-            api_key = trade_settings.binance_spot_testnet_api_key or trade_settings.binance_testnet_api_key
-            api_secret = trade_settings.binance_spot_testnet_api_secret or trade_settings.binance_testnet_api_secret
-    else:
-        api_key = trade_settings.binance_api_key
-        api_secret = trade_settings.binance_api_secret
-    api_key = _clean_cred(api_key)
-    api_secret = _clean_cred(api_secret)
+    api_key, api_secret, trade_settings = resolve_api_credentials(settings, trade_env, market)
     if not api_key or not api_secret:
         return None, trade_env
 
@@ -178,3 +159,41 @@ async def account_summary(
             trade_env=normalized_env,
             error=_normalize_binance_error(exc),
         )
+
+
+@router.get("/trades")
+async def account_trades(
+    market: str = Query(default="spot"),
+    trade_env: str = Query(default="testnet"),
+    symbol: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict:
+    market = market.lower()
+    client, normalized_env = _build_client(trade_env, market)
+    if client is None:
+        return {"status": "no_keys", "market": market, "trade_env": normalized_env, "trades": []}
+    try:
+        if market == "futures":
+            params = {"limit": int(limit)}
+            if symbol:
+                params["symbol"] = symbol.upper()
+            rows = await asyncio.to_thread(client.futures_account_trades, **params)
+        else:
+            if not symbol:
+                return {
+                    "status": "error",
+                    "market": market,
+                    "trade_env": normalized_env,
+                    "error": "symbol_required_for_spot_trades",
+                    "trades": [],
+                }
+            rows = await asyncio.to_thread(client.get_my_trades, symbol=symbol.upper(), limit=int(limit))
+        return {"status": "ok", "market": market, "trade_env": normalized_env, "trades": rows or []}
+    except Exception as exc:
+        return {
+            "status": "error",
+            "market": market,
+            "trade_env": normalized_env,
+            "error": _normalize_binance_error(exc),
+            "trades": [],
+        }

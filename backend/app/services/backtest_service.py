@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 import pandas as pd
+import math
 
 from app.repositories.candle_repository import CandleRepository
 from app.strategies.base_strategy import BaseStrategy
+from app.utils.candle_frame import candles_to_df
 
 
 @dataclass
@@ -39,6 +41,11 @@ class BacktestStats:
     avg_pnl: float
     profit_factor: float | None
     max_drawdown: float
+    max_drawdown_pct: float
+    expectancy_pct: float
+    sharpe: float | None
+    cagr_pct: float | None
+    ending_equity: float
 
 
 class BacktestService:
@@ -53,10 +60,15 @@ class BacktestService:
         window_bars: int,
         max_bars: int,
         stride: int,
+        initial_equity: float = 10_000.0,
+        risk_per_trade: float = 0.01,
+        fee_bps: float = 4.0,
+        slippage_bps: float = 2.0,
+        intra_candle_mode: str = "pessimistic",
     ) -> tuple[list[BacktestTrade], BacktestStats]:
         candles = await self._candle_repository.latest(symbol, timeframe, limit=max_bars)
         if len(candles) < window_bars + 2:
-            return [], BacktestStats(0, 0.0, 0.0, 0.0, None, 0.0)
+            return [], BacktestStats(0, 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0, None, None, initial_equity)
 
         records = [
             {
@@ -72,11 +84,34 @@ class BacktestService:
             for candle in candles
         ]
         data = pd.DataFrame(records)
+
+        # MTF: load trend data once before the loop
+        h1_data_indexed: pd.DataFrame | None = None
+        if getattr(self._strategy, "is_mtf", False):
+            trend_tf = getattr(self._strategy, "trend_timeframe", None) or getattr(self._strategy, "h1_timeframe", "1h")
+            h1_candles = await self._candle_repository.latest(symbol, trend_tf, limit=5000)
+            if h1_candles:
+                h1_df = candles_to_df(h1_candles)
+                h1_data_indexed = h1_df.set_index("open_time")
+
         trades: list[BacktestTrade] = []
         trade_id = 1
+        next_allowed_idx = window_bars - 1  # cooldown: skip until previous trade closes
         for idx in range(window_bars - 1, len(data) - 1, max(stride, 1)):
+            if idx < next_allowed_idx:
+                continue
             window = data.iloc[idx - window_bars + 1 : idx + 1]
-            payload = self._strategy.evaluate(window)
+            context: dict | None = None
+            if h1_data_indexed is not None:
+                last_time = candles[idx].open_time
+                h1_slice = h1_data_indexed[h1_data_indexed.index <= last_time]
+                if len(h1_slice) >= 30:
+                    trend_df_slice = h1_slice.reset_index()
+                    context = {
+                        "trend_data": trend_df_slice,
+                        "h1_data": trend_df_slice,  # legacy compat
+                    }
+            payload = self._strategy.evaluate(window, context)
             if not payload:
                 continue
             trade = self._simulate_trade(
@@ -86,13 +121,26 @@ class BacktestService:
                 symbol=symbol,
                 timeframe=timeframe,
                 trade_id=trade_id,
+                fee_bps=fee_bps,
+                slippage_bps=slippage_bps,
+                intra_candle_mode=intra_candle_mode,
             )
             if trade:
                 trades.append(trade)
                 trade_id += 1
+                # Don't enter a new trade until this one has closed
+                next_allowed_idx = idx + 1 + self._trade_close_bar(trade, candles, idx + 1)
 
-        stats = self._stats(trades)
+        stats = self._stats(trades, initial_equity=initial_equity, risk_per_trade=risk_per_trade)
         return trades, stats
+
+    def _trade_close_bar(self, trade: "BacktestTrade", candles: list, start_index: int) -> int:
+        """Return how many bars after start_index the trade closed (for cooldown)."""
+        close_ts = trade.exit_time
+        for offset, candle in enumerate(candles[start_index:], start=0):
+            if int(candle.open_time.timestamp()) >= close_ts:
+                return offset
+        return len(candles) - start_index
 
     def _simulate_trade(
         self,
@@ -102,6 +150,9 @@ class BacktestService:
         symbol: str,
         timeframe: str,
         trade_id: int,
+        fee_bps: float,
+        slippage_bps: float,
+        intra_candle_mode: str,
     ) -> BacktestTrade | None:
         candles = list(candles)
         if start_index >= len(candles):
@@ -118,6 +169,17 @@ class BacktestService:
         current_stop = float(stop) if stop is not None else None
         moved_to_be = False
         tp_hits: list[dict] = []
+        weights: list[float] = []
+        if take_levels:
+            if len(take_levels) == 1:
+                weights = [1.0]
+            elif len(take_levels) == 2:
+                weights = [0.5, 0.5]
+            else:
+                even = 1.0 / len(take_levels)
+                weights = [even for _ in take_levels]
+        remaining = 1.0
+        realized_pnl = 0.0
 
         entry_time = int(candles[start_index - 1].open_time.timestamp())
         exit_price = candles[-1].close
@@ -127,29 +189,18 @@ class BacktestService:
         for candle in candles[start_index:]:
             high = float(candle.high)
             low = float(candle.low)
+            stop_hit = current_stop is not None and (low <= current_stop if side > 0 else high >= current_stop)
 
-            if breakeven_at and not moved_to_be:
-                if side > 0 and high >= breakeven_at:
-                    current_stop = entry
-                    moved_to_be = True
-                if side < 0 and low <= breakeven_at:
-                    current_stop = entry
-                    moved_to_be = True
-
-            if current_stop is not None:
-                hit_stop = low <= current_stop if side > 0 else high >= current_stop
-                if hit_stop:
-                    exit_price = current_stop
-                    exit_time = int(candle.open_time.timestamp())
-                    exit_reason = "BE" if moved_to_be and abs(current_stop - entry) < entry * 0.0001 else "SL"
-                    break
-
+            # Handle ambiguous intra-candle hit order (both TP and SL touched).
             if take_levels:
+                final_tp_hit = False
                 for index, level in enumerate(take_levels):
                     if any(hit["level"] == index + 1 for hit in tp_hits):
                         continue
                     hit_tp = high >= level if side > 0 else low <= level
                     if hit_tp:
+                        if stop_hit and intra_candle_mode == "pessimistic":
+                            continue
                         tp_hits.append(
                             {
                                 "level": index + 1,
@@ -157,14 +208,45 @@ class BacktestService:
                                 "time": int(candle.open_time.timestamp()),
                             }
                         )
-                if tp_hits and len(tp_hits) >= len(take_levels):
-                    last = tp_hits[-1]
-                    exit_price = float(last["price"])
-                    exit_time = int(candle.open_time.timestamp())
-                    exit_reason = f"TP{last['level']}"
+                        # Move stop to breakeven when TP1 is hit
+                        if index == 0 and not moved_to_be:
+                            current_stop = float(breakeven_at) if breakeven_at is not None else entry
+                            moved_to_be = True
+                        fill_price = self._apply_fill(level, side=side, is_exit=True, slippage_bps=slippage_bps)
+                        trade_r = ((fill_price - entry) / entry) * 100 * side
+                        w = min(weights[index] if index < len(weights) else 0.0, remaining)
+                        realized_pnl += trade_r * w
+                        remaining = max(0.0, remaining - w)
+                        # Exit immediately when the last TP level is hit
+                        if index + 1 == len(take_levels):
+                            exit_price = fill_price
+                            exit_time = int(candle.open_time.timestamp())
+                            exit_reason = f"TP{index + 1}"
+                            final_tp_hit = True
+                            break
+                if final_tp_hit:
                     break
 
-        pnl = ((exit_price - entry) / entry) * 100 * side
+            if current_stop is not None and stop_hit:
+                    stop_fill = self._apply_fill(current_stop, side=side, is_exit=True, slippage_bps=slippage_bps)
+                    exit_price = stop_fill
+                    exit_time = int(candle.open_time.timestamp())
+                    exit_reason = "BE" if moved_to_be and abs(current_stop - entry) < entry * 0.0001 else "SL"
+                    if remaining > 0:
+                        trade_r = ((stop_fill - entry) / entry) * 100 * side
+                        realized_pnl += trade_r * remaining
+                        remaining = 0.0
+                    break
+
+        if remaining > 0:
+            if exit_reason == "OPEN":
+                exit_price = self._apply_fill(float(exit_price), side=side, is_exit=True, slippage_bps=slippage_bps)
+            trade_r = ((exit_price - entry) / entry) * 100 * side
+            realized_pnl += trade_r * remaining
+        entry_fill = self._apply_fill(entry, side=side, is_exit=False, slippage_bps=slippage_bps)
+        impact_pct = ((entry_fill - entry) / entry) * 100 * side
+        fee_pct = 2 * (fee_bps / 10000.0) * 100
+        pnl = realized_pnl - impact_pct - fee_pct
         meta = payload.get("meta") or {}
         chart_pattern = meta.get("chart_pattern") or {}
         candles_meta = meta.get("candles") or {}
@@ -189,9 +271,9 @@ class BacktestService:
             pnl=pnl,
         )
 
-    def _stats(self, trades: list[BacktestTrade]) -> BacktestStats:
+    def _stats(self, trades: list[BacktestTrade], initial_equity: float, risk_per_trade: float) -> BacktestStats:
         if not trades:
-            return BacktestStats(0, 0.0, 0.0, 0.0, None, 0.0)
+            return BacktestStats(0, 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0, None, None, initial_equity)
         pnl_values = [trade.pnl for trade in trades]
         wins = [p for p in pnl_values if p > 0]
         losses = [p for p in pnl_values if p < 0]
@@ -201,7 +283,12 @@ class BacktestService:
         profit = sum(wins)
         loss = sum(abs(p) for p in losses)
         profit_factor = profit / loss if loss > 0 else None
-        max_drawdown = self._max_drawdown(pnl_values)
+        ending_equity, max_drawdown, max_drawdown_pct, sharpe, cagr = self._equity_stats(
+            trades,
+            initial_equity=initial_equity,
+            risk_per_trade=risk_per_trade,
+        )
+        expectancy = avg_pnl
         return BacktestStats(
             total_trades=len(trades),
             win_rate=win_rate,
@@ -209,17 +296,52 @@ class BacktestService:
             avg_pnl=avg_pnl,
             profit_factor=profit_factor,
             max_drawdown=max_drawdown,
+            max_drawdown_pct=max_drawdown_pct,
+            expectancy_pct=expectancy,
+            sharpe=sharpe,
+            cagr_pct=cagr,
+            ending_equity=ending_equity,
         )
 
-    def _max_drawdown(self, pnl_values: list[float]) -> float:
-        equity = 0.0
-        peak = 0.0
+    def _equity_stats(
+        self,
+        trades: list[BacktestTrade],
+        initial_equity: float,
+        risk_per_trade: float,
+    ) -> tuple[float, float, float, float | None, float | None]:
+        equity = float(initial_equity)
+        peak = equity
         max_dd = 0.0
-        for pnl in pnl_values:
-            equity += pnl
+        trade_returns: list[float] = []
+        for trade in trades:
+            trade_ret = (trade.pnl / 100.0) * risk_per_trade
+            trade_returns.append(trade_ret)
+            equity *= 1 + trade_ret
             if equity > peak:
                 peak = equity
-            drawdown = peak - equity
-            if drawdown > max_dd:
-                max_dd = drawdown
-        return max_dd
+            dd = peak - equity
+            if dd > max_dd:
+                max_dd = dd
+        max_dd_pct = (max_dd / peak) * 100 if peak > 0 else 0.0
+
+        sharpe = None
+        if len(trade_returns) >= 2:
+            mean_r = sum(trade_returns) / len(trade_returns)
+            var = sum((r - mean_r) ** 2 for r in trade_returns) / (len(trade_returns) - 1)
+            std = math.sqrt(var)
+            if std > 0:
+                sharpe = mean_r / std * math.sqrt(len(trade_returns))
+
+        cagr = None
+        if trades and initial_equity > 0:
+            days = max((trades[-1].exit_time - trades[0].entry_time) / 86400.0, 1.0)
+            years = days / 365.25
+            if years > 0 and equity > 0:
+                cagr = ((equity / initial_equity) ** (1 / years) - 1) * 100
+        return equity, max_dd, max_dd_pct, sharpe, cagr
+
+    def _apply_fill(self, price: float, side: int, is_exit: bool, slippage_bps: float) -> float:
+        slip = (slippage_bps / 10000.0) * price
+        if side > 0:
+            return price - slip if is_exit else price + slip
+        return price + slip if is_exit else price - slip
