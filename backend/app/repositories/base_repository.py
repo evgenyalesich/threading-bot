@@ -14,9 +14,13 @@ class BaseRepository(Generic[ModelT]):
 
     async def add(self, entity: ModelT) -> ModelT:
         self._session.add(entity)
-        await self._session.commit()
-        await self._session.refresh(entity)
-        return entity
+        try:
+            await self._session.commit()
+            await self._session.refresh(entity)
+            return entity
+        except Exception:
+            await self._session.rollback()
+            raise
 
     async def get(self, entity_id: int) -> ModelT | None:
         result = await self._session.execute(
@@ -31,10 +35,18 @@ class BaseRepository(Generic[ModelT]):
     async def update(self, entity: ModelT, data: dict) -> ModelT:
         for key, value in data.items():
             setattr(entity, key, value)
-        await self._session.commit()
-        await self._session.refresh(entity)
-        return entity
+        try:
+            await self._session.commit()
+            await self._session.refresh(entity)
+            return entity
+        except Exception:
+            await self._session.rollback()
+            raise
 
     async def delete(self, entity: ModelT) -> None:
         await self._session.delete(entity)
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise

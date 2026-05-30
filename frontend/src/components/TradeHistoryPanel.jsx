@@ -11,7 +11,7 @@ function formatTime(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-export default function TradeHistoryPanel({ trades }) {
+export default function TradeHistoryPanel({ trades, source = "simulation" }) {
   const [expandedId, setExpandedId] = useState(null);
   const [page, setPage] = useState(0);
   const pageSize = 100;
@@ -33,7 +33,14 @@ export default function TradeHistoryPanel({ trades }) {
   return (
     <div className="trade-history-panel">
       <div className="trade-history-title">
-        История сделок <span style={{ opacity: 0.7 }}>({total})</span>
+        История сделок <span style={{ opacity: 0.7 }}>({total})</span>{" "}
+        <span style={{ opacity: 0.7, fontSize: 12 }}>
+          {source === "backtest"
+            ? "Источник: Бэктест"
+            : source === "orders"
+              ? "Источник: Биржевые/локальные ордера"
+              : "Источник: Симуляция"}
+        </span>
       </div>
       <div className="trade-history-controls">
         <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={safePage === 0}>

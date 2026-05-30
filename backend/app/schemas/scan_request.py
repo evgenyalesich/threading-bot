@@ -5,6 +5,7 @@ class ScanRequest(BaseSchema):
     market: str = "spot"
     timeframe: str = "1h"         # Entry signal timeframe (Screen 2+3)
     lookback_days: int = 120
+    strategy: str = "ema200_fib_divergence"
     quote: str = "USDT"
     h1_timeframe: str = "1h"      # Entry signal timeframe (legacy alias)
     trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
@@ -14,7 +15,7 @@ class ScanRequest(BaseSchema):
     limit: int = 20
     auto_sync: bool = False
     store_signals: bool = True
-    min_confidence: float = 0.45
+    min_confidence: float = 0.35
     min_confirmations: int = 1
     require_pattern: bool = False
     require_divergence: bool = False

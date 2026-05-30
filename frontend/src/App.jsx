@@ -1,26 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ChartPanel from "./components/ChartPanel.jsx";
 import ControlPanel from "./components/ControlPanel.jsx";
-import MappingTable from "./components/MappingTable.jsx";
 import PairsPanel from "./components/PairsPanel.jsx";
 import ScanResultsPanel from "./components/ScanResultsPanel.jsx";
-import SignalHistoryModal from "./components/SignalHistoryModal.jsx";
+import OrderDetailsModal from "./components/OrderDetailsModal.jsx";
 import SignalList from "./components/SignalList.jsx";
 import StatsPanel from "./components/StatsPanel.jsx";
 import TradeHistoryPanel from "./components/TradeHistoryPanel.jsx";
 import TradeJournal from "./components/TradeJournal.jsx";
 import AnalysisDebugPanel from "./components/AnalysisDebugPanel.jsx";
 import AccountPanel from "./components/AccountPanel.jsx";
+import OrderConfirmModal from "./components/OrderConfirmModal.jsx";
 import {
-  createMapping,
+  closeOrderPosition,
   backfillSignals,
-  deleteMapping,
   fetchCandles,
   fetchIndicators,
-  fetchMappings,
   fetchOrders,
   fetchPairs,
-  fetchSignalById,
   fetchSignals,
   explainAnalysis,
   fetchAccountSummary,
@@ -33,11 +30,23 @@ import {
   runBacktest,
   scanMarket,
   syncMarket,
-  updateMapping,
 } from "./api/client.js";
+
+const BASE_SYNC_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"];
 
 function toEpochSeconds(value) {
   return Math.floor(new Date(value).getTime() / 1000);
+}
+
+function timeframeToMs(tf) {
+  if (!tf || tf.length < 2) return null;
+  const unit = tf.slice(-1);
+  const value = Number(tf.slice(0, -1));
+  if (!Number.isFinite(value) || value <= 0) return null;
+  if (unit === "m") return value * 60 * 1000;
+  if (unit === "h") return value * 60 * 60 * 1000;
+  if (unit === "d") return value * 24 * 60 * 60 * 1000;
+  return null;
 }
 
 function humanizeApiError(code) {
@@ -55,6 +64,46 @@ function humanizeApiError(code) {
     binance_unreachable: "Binance API недоступен.",
   };
   return map[code] || code;
+}
+
+function humanizeNoSignalReason(reason) {
+  const map = {
+    no_candles_in_db: "Нет свечей в базе. Сначала синхронизируй историю.",
+    no_trend_data_or_insufficient: "Недостаточно данных тренда. Синхронизируй trend timeframe.",
+    insufficient_entry_bars: "Недостаточно баров для расчета сигнала.",
+    stoch_not_confirming: "Stochastic не подтверждает вход.",
+    rsi_not_confirming: "RSI не подтверждает вход.",
+    confidence_below_min: "Уверенность ниже минимального порога.",
+    below_ema200_no_long: "Цена ниже EMA200, лонг отфильтрован.",
+    above_ema200_no_short: "Цена выше EMA200, шорт отфильтрован.",
+    trend_too_flat: "Тренд слишком плоский, пропускаю флэт.",
+    volatility_too_low: "Волатильность слишком низкая.",
+    volatility_spike_skip: "Слишком резкий всплеск волатильности.",
+    weak_signal_candle: "Сигнальная свеча слабая.",
+    risk_too_wide: "Стоп слишком далеко от входа.",
+    risk_too_tight: "Стоп слишком близко к входу.",
+    zero_risk: "Некорректный риск-профиль сделки (zero risk).",
+    explain_failed: "Не удалось получить объяснение.",
+  };
+  return map[reason] || reason;
+}
+
+function futuresPositionRoi(position) {
+  if (!position) return null;
+  const upnl = Number(position.unrealized_profit);
+  const margin = Number(position.margin);
+  if (Number.isFinite(upnl) && Number.isFinite(margin) && margin > 0) {
+    return (upnl / margin) * 100;
+  }
+  const entry = Number(position.entry_price);
+  const mark = Number(position.mark_price);
+  const leverage = Number(position.leverage);
+  const side = Number(position.position_amt) >= 0 ? 1 : -1;
+  if (entry > 0 && mark > 0) {
+    const priceMove = ((mark - entry) / entry) * 100 * side;
+    return Number.isFinite(leverage) && leverage > 0 ? priceMove * leverage : priceMove;
+  }
+  return null;
 }
 
 function buildTradeHistory(candles, signals, limit) {
@@ -159,7 +208,7 @@ function buildTradeHistory(candles, signals, limit) {
 
 export default function App() {
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [timeframe, setTimeframe] = useState("15m");
+  const [timeframe, setTimeframe] = useState("1h");
   const [lookbackDays, setLookbackDays] = useState(120);
   const [market, setMarket] = useState("spot");
   const [dataEnv, setDataEnv] = useState("real");
@@ -173,7 +222,6 @@ export default function App() {
   const [candles, setCandles] = useState([]);
   const [signals, setSignals] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [mappings, setMappings] = useState([]);
   const [pairs, setPairs] = useState([]);
   const [pairsLoading, setPairsLoading] = useState(false);
   const [pairSearch, setPairSearch] = useState("");
@@ -188,12 +236,11 @@ export default function App() {
   const [scanMaxPairs, setScanMaxPairs] = useState(50);
   const [scanAutoSync, setScanAutoSync] = useState(false);
   const [activeOrder, setActiveOrder] = useState(null);
-  const [historySignals, setHistorySignals] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [indicatorData, setIndicatorData] = useState(null);
   const [mode, setMode] = useState("semi");
   const [h1Timeframe, setH1Timeframe] = useState("1h");
   const [trendTimeframe, setTrendTimeframe] = useState("4h");
+  const [strategy, setStrategy] = useState("swing_60pip");
 
   const [status, setStatus] = useState("Ожидание");
   const [sidebarWidth, setSidebarWidth] = useState(360);
@@ -224,7 +271,7 @@ export default function App() {
   const [backfillStride, setBackfillStride] = useState(1);
   const [backfillMaxBars, setBackfillMaxBars] = useState(20000);
   const [autoFit, setAutoFit] = useState(false);
-  const [minConfidence, setMinConfidence] = useState(0.45);
+  const [minConfidence, setMinConfidence] = useState(0.35);
   const [minConfirmations, setMinConfirmations] = useState(1);
   const [requirePattern, setRequirePattern] = useState(false);
   const [requireDivergence, setRequireDivergence] = useState(false);
@@ -236,13 +283,61 @@ export default function App() {
   const [analysisDebug, setAnalysisDebug] = useState(null);
   const [accountSummary, setAccountSummary] = useState(null);
   const [accountTrades, setAccountTrades] = useState([]);
+  const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
   const [leverage, setLeverage] = useState(10);
   const [fitRequest, setFitRequest] = useState(0);
+  const [activeTab, setActiveTab] = useState("trade");
+  const [wsConnected, setWsConnected] = useState(false);
+  const [tradeWsConnected, setTradeWsConnected] = useState(false);
+  const [lastTickAt, setLastTickAt] = useState(null);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [autoSyncRunning, setAutoSyncRunning] = useState(false);
+  const [wsRetryTick, setWsRetryTick] = useState(0);
+  const [liveTickSeq, setLiveTickSeq] = useState(0);
+  const [feedSource, setFeedSource] = useState("idle");
+  const [tradeReconnectCount, setTradeReconnectCount] = useState(0);
+  const [nowTs, setNowTs] = useState(Date.now());
   const syncAttemptsRef = useRef(new Set());
   const breakevenTriggeredRef = useRef(new Set());
+  const bgSyncLocksRef = useRef(new Set());
+  const bgSyncDoneRef = useRef(new Set());
 
-  const latestSignal = useMemo(() => signals[0], [signals]);
+  const signalsForTimeframe = useMemo(
+    () => signals.filter((item) => item.timeframe === timeframe),
+    [signals, timeframe]
+  );
+  const latestSignalForTimeframe = useMemo(() => signalsForTimeframe[0], [signalsForTimeframe]);
+  const latestActiveOrder = useMemo(() => {
+    if (!orders.length) return null;
+    const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+    return (
+      orders.find((order) => {
+        const orderSymbol = (order.symbol || "").replace("-", "").toUpperCase();
+        if (orderSymbol !== symbolKey) return false;
+        return !["cancelled", "filled", "closed"].includes((order.status || "").toLowerCase());
+      }) || null
+    );
+  }, [orders, binanceSymbol, symbol]);
+  const chartTradePlan = useMemo(() => {
+    const fromSignal = latestSignalForTimeframe?.meta?.trade_plan ?? null;
+    if (fromSignal) return fromSignal;
+    if (!latestActiveOrder) return null;
+    const levels = Array.isArray(latestActiveOrder.take_levels)
+      ? latestActiveOrder.take_levels.filter((v) => Number.isFinite(v))
+      : [];
+    return {
+      entry: latestActiveOrder.price,
+      stop_loss: latestActiveOrder.stop_loss,
+      take_profit: latestActiveOrder.take_profit,
+      take_levels: levels,
+      source: "order",
+    };
+  }, [latestSignalForTimeframe, latestActiveOrder]);
   const priceMap = useMemo(() => new Map(pairs.map((pair) => [pair.symbol, pair.last_price])), [pairs]);
+  const futuresPositionMap = useMemo(() => {
+    const rows = accountSummary?.market === "futures" ? accountSummary.futures_positions || [] : [];
+    return new Map(rows.map((position) => [(position.symbol || "").replace("-", "").toUpperCase(), position]));
+  }, [accountSummary]);
   const currentPair = useMemo(() => {
     if (selectedPair?.symbol === binanceSymbol) {
       return selectedPair;
@@ -255,9 +350,7 @@ export default function App() {
       .filter((pair) => {
         if (pairSearch) {
           const search = pairSearch.toUpperCase();
-          const target = `${pair.symbol} ${pair.base_asset ?? ""} ${pair.quote_asset ?? ""} ${
-            pair.yfinance_symbol ?? ""
-          }`.toUpperCase();
+          const target = `${pair.symbol} ${pair.base_asset ?? ""} ${pair.quote_asset ?? ""}`.toUpperCase();
           if (!target.includes(search)) return false;
         }
         if (minVolatility > 0 && pair.volatility_score < minVolatility) return false;
@@ -269,9 +362,16 @@ export default function App() {
   }, [pairs, pairSearch, minVolatility, maxPrice, maxNotional]);
 
   const stats = useMemo(() => {
-    const total = signals.length;
+    const total = signalsForTimeframe.length;
     const pnlValues = orders
       .map((order) => {
+        if (["closed", "filled", "cancelled"].includes((order.status || "").toLowerCase())) {
+          return Number.isFinite(order.realized_pnl) ? Number(order.realized_pnl) : null;
+        }
+        const position = futuresPositionMap.get((order.symbol || "").replace("-", "").toUpperCase());
+        if (position) {
+          return futuresPositionRoi(position);
+        }
         const lastPrice = priceMap.get(order.symbol);
         if (!lastPrice || !order.price) return null;
         const side = order.side === "BUY" ? 1 : -1;
@@ -293,15 +393,67 @@ export default function App() {
       profitFactor,
       totalPnL,
     };
-  }, [signals, orders, priceMap]);
+  }, [signalsForTimeframe, orders, priceMap, futuresPositionMap]);
 
   const activeStats = backtestStats ?? stats;
 
   const tradeHistory = useMemo(
-    () => buildTradeHistory(candles, signals, tradeHistoryLimit),
-    [candles, signals, tradeHistoryLimit]
+    () => buildTradeHistory(candles, signalsForTimeframe, tradeHistoryLimit),
+    [candles, signalsForTimeframe, tradeHistoryLimit]
   );
-  const displayedTrades = backtestTrades.length ? backtestTrades : tradeHistory;
+  const orderTrades = useMemo(() => {
+    const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+    return orders
+      .filter((order) => ((order.symbol || "").replace("-", "").toUpperCase() === symbolKey))
+      .map((order) => {
+        const isClosed = ["closed", "filled", "cancelled"].includes((order.status || "").toLowerCase());
+        const position = futuresPositionMap.get((order.symbol || "").replace("-", "").toUpperCase());
+        const fallbackLast = Number(priceMap.get(order.symbol));
+        const current = candles.length ? Number(candles[candles.length - 1].close) : fallbackLast;
+        const entry = !isClosed && position ? Number(position.entry_price) : Number(order.price || current || 0);
+        const exitPrice = isClosed
+          ? Number(order.exit_price || order.price || entry)
+          : position
+            ? Number(position.mark_price || current || entry)
+            : Number(current || entry);
+        const side = (order.side || "").toUpperCase() === "SELL" ? "short" : "long";
+        const sideMul = side === "long" ? 1 : -1;
+        let pnl = 0;
+        if (isClosed) {
+          if (Number.isFinite(order.realized_pnl)) {
+            pnl = Number(order.realized_pnl);
+          } else if (Number(order.exit_price) > 0 && Number(order.price) > 0) {
+            pnl = ((Number(order.exit_price) - Number(order.price)) / Number(order.price)) * 100 * sideMul;
+          }
+        } else if (position) {
+          pnl = futuresPositionRoi(position) ?? 0;
+        } else if (entry > 0) {
+          pnl = ((exitPrice - entry) / entry) * 100 * sideMul;
+        }
+        return {
+          id: `order-${order.id}`,
+          symbol: order.symbol,
+          timeframe: order.timeframe || timeframe,
+          side,
+          entry,
+          entry_time: toEpochSeconds(order.created_at),
+          exit_price: exitPrice,
+          exit_time: isClosed ? toEpochSeconds(order.closed_at || order.created_at) : null,
+          exit_reason: isClosed ? (order.status || "CLOSED").toUpperCase() : "OPEN",
+          pnl,
+          tp_hits: [],
+          rationale: order.reject_reason || null,
+          trade_plan: {
+            stop_loss: order.stop_loss,
+            take_profit: order.take_profit,
+            take_levels: order.take_levels,
+          },
+        };
+      });
+  }, [orders, binanceSymbol, symbol, timeframe, candles, priceMap, futuresPositionMap]);
+
+  const displayedTrades = activeTab === "backtest" ? backtestTrades : orderTrades;
+  const tradeHistorySource = activeTab === "backtest" ? "backtest" : "orders";
   const chartTrades = useMemo(() => {
     if (!displayedTrades.length) return [];
     const ordered = [...displayedTrades].sort((a, b) => a.entry_time - b.entry_time);
@@ -314,6 +466,69 @@ export default function App() {
   const maxCandles = useMemo(() => chartLimit + 200, [chartLimit]);
   const pageSize = 1000;
   const maxCandlesTotal = useMemo(() => Math.max(maxCandles, 15000), [maxCandles]);
+  const syncTimeframes = useMemo(() => {
+    const merged = [
+      ...BASE_SYNC_TIMEFRAMES,
+      timeframe,
+      h1Timeframe,
+      trendTimeframe,
+    ].filter(Boolean);
+    return [...new Set(merged)];
+  }, [timeframe, h1Timeframe, trendTimeframe]);
+
+  const syncTimeframesForSymbol = async (targetSymbol, options = {}) => {
+    if (!targetSymbol) return { ok: 0, fail: 0 };
+    const { silent = false, includeBackfill = false, doSync = true } = options;
+    let ok = 0;
+    let fail = 0;
+    const localSymbol = symbol;
+    const localMarket = market;
+    const localDays = lookbackDays;
+    const localDataEnv = dataEnv;
+    if (doSync) {
+      const queue = [...syncTimeframes];
+      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+        while (queue.length) {
+          const tf = queue.shift();
+          if (!tf) continue;
+          try {
+            await syncMarket(localSymbol, tf, localDays, localMarket, targetSymbol, localDataEnv);
+            ok += 1;
+          } catch {
+            fail += 1;
+          }
+        }
+      });
+      await Promise.all(workers);
+    }
+    if (!silent && doSync) {
+      if (ok > 0 && fail === 0) {
+        setStatus(`Синхронизировано ТФ: ${syncTimeframes.join(", ")}`);
+      } else if (ok > 0) {
+        setStatus(`Частично синхронизировано (${ok}/${syncTimeframes.length})`);
+      } else {
+        setStatus("Ошибка синхронизации");
+      }
+    }
+    if (ok > 0 && doSync) {
+      setLastSyncAt(Date.now());
+    }
+    if (includeBackfill) {
+      try {
+        await backfillSignals({
+          symbol: localSymbol,
+          timeframe,
+          strategy,
+          lookback_days: localDays,
+          stride: backfillStride,
+          max_bars: backfillMaxBars,
+        });
+      } catch {
+        // keep candles even if backfill failed
+      }
+    }
+    return { ok, fail };
+  };
 
   useEffect(() => {
     setBacktestStats(null);
@@ -327,73 +542,123 @@ export default function App() {
       try {
         const summary = await fetchAccountSummary(market, tradeEnv);
         if (active) setAccountSummary(summary);
+      } catch (e) {
+        if (active) {
+          setAccountSummary({ status: "error", market, trade_env: tradeEnv, error: e?.message ?? "ошибка" });
+        }
+      }
+    }
+    async function loadTrades() {
+      try {
         const trades = await fetchAccountTrades(market, tradeEnv, binanceSymbol, 50);
         if (active) setAccountTrades(trades?.trades ?? []);
       } catch (e) {
         if (active) {
-          setAccountSummary({ status: "error", market, trade_env: tradeEnv, error: e?.message ?? "ошибка" });
           setAccountTrades([]);
         }
       }
     }
     loadAccount();
-    const interval = setInterval(loadAccount, 10000);
+    loadTrades();
+    const accountInterval = setInterval(loadAccount, 2000);
+    const tradesInterval = setInterval(loadTrades, 10000);
     return () => {
       active = false;
-      clearInterval(interval);
+      clearInterval(accountInterval);
+      clearInterval(tradesInterval);
     };
   }, [market, tradeEnv, binanceSymbol]);
 
   useEffect(() => {
+    let active = true;
+    let retryTimer = null;
+
     async function load() {
-      setCandles([]);
-      setSignals([]);
       setIndicatorData(null);
       try {
         let data = await fetchCandles(symbol, timeframe, chartLimit);
+        if (!active) return;
+        // After service reboot binanceSymbol can be unresolved for a short time;
+        // use symbol fallback so auto-sync still works.
+        const syncSymbol =
+          binanceSymbol || (symbol && !symbol.includes("-") ? symbol.toUpperCase() : null);
         const syncKey = `${symbol}:${timeframe}:${market}:${dataEnv}`;
-        const shouldSync = binanceSymbol && data.length < 20 && !syncAttemptsRef.current.has(syncKey);
+        const shouldSync = syncSymbol && data.length < 20 && !syncAttemptsRef.current.has(syncKey);
         if (shouldSync) {
-          setStatus("Нет истории, синхронизирую...");
-          try {
-            syncAttemptsRef.current.add(syncKey);
-            await syncMarket(symbol, timeframe, lookbackDays, market, binanceSymbol, dataEnv);
-            data = await fetchCandles(symbol, timeframe, chartLimit);
-          } catch (syncError) {
-            // ignore sync failures, fall back to empty state
-          }
+          syncAttemptsRef.current.add(syncKey);
+          setStatus(data.length ? "Догружаю историю..." : "История загружается...");
+          void (async () => {
+            try {
+              await syncMarket(symbol, timeframe, lookbackDays, market, syncSymbol, dataEnv);
+              const fresh = await fetchCandles(symbol, timeframe, chartLimit);
+              if (!active) return;
+              if (fresh.length) {
+                setCandles(fresh);
+                setLastSyncAt(Date.now());
+                setStatus("Готово");
+              }
+            } catch {
+              if (active && !data.length) setStatus("История отсутствует");
+            }
+          })();
         }
+        if (!active) return;
         setCandles(data);
-        const signalData = await fetchSignals(symbol, 100, timeframe);
+        const [signalData, indicators] = await Promise.all([
+          fetchSignals(symbol, 200).catch(() => []),
+          data.length ? fetchIndicators(symbol, timeframe, indicatorLimit).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (!active) return;
         setSignals(signalData);
-        if (data.length) {
-          try {
-            const indicators = await fetchIndicators(symbol, timeframe, indicatorLimit);
-            setIndicatorData(indicators);
-          } catch (indicatorError) {
-            setIndicatorData(null);
-          }
-        } else {
-          setIndicatorData(null);
-        }
+        setIndicatorData(indicators);
         if (data.length === 0) {
-          setStatus("История отсутствует");
+          if (!active) return;
+          if (!shouldSync) setStatus("История отсутствует");
         } else {
-          setStatus("Готово");
+          if (!active) return;
+          if (!shouldSync) setStatus("Готово");
         }
       } catch (error) {
-        setCandles([]);
-        setStatus("Ошибка загрузки");
+        if (!active) return;
+        setStatus("Ошибка загрузки, повторяю...");
+        retryTimer = setTimeout(async () => {
+          if (!active) return;
+          try {
+            const retry = await fetchCandles(symbol, timeframe, chartLimit);
+            if (!active) return;
+            if (retry.length) {
+              setCandles(retry);
+              setStatus("Готово");
+            }
+          } catch {
+            // keep previous chart data on repeated failure
+          }
+        }, 1200);
       }
     }
 
     load();
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [symbol, timeframe, market, binanceSymbol, lookbackDays, dataEnv, chartLimit, indicatorLimit]);
 
   useEffect(() => {
-    setSelectedPair(null);
-    setBinanceSymbol(null);
+    // Keep current stream symbol while switching market to avoid race-condition
+    // where an async market-change cleanup overwrites a freshly selected pair.
+    setSelectedPair((prev) => {
+      if (!prev) return null;
+      return prev.market === market ? prev : null;
+    });
   }, [market]);
+
+  useEffect(() => {
+    setLastTickAt(null);
+    setFeedSource("switching_env");
+    setWsConnected(false);
+    setTradeWsConnected(false);
+  }, [dataEnv]);
 
   useEffect(() => {
     async function resolve() {
@@ -419,6 +684,47 @@ export default function App() {
 
     resolve();
   }, [symbol, market, selectedPair]);
+
+  useEffect(() => {
+    const syncSymbol = binanceSymbol || (symbol && !symbol.includes("-") ? symbol.toUpperCase() : null);
+    if (!syncSymbol) return undefined;
+
+    const baseKey = `${syncSymbol}:${market}:${dataEnv}:${lookbackDays}`;
+    const lockKey = `${baseKey}:${syncTimeframes.join(",")}`;
+    const initialTimer = setTimeout(() => {
+      if (!bgSyncDoneRef.current.has(lockKey) && !bgSyncLocksRef.current.has(lockKey)) {
+        bgSyncLocksRef.current.add(lockKey);
+        void (async () => {
+          try {
+            await syncTimeframesForSymbol(syncSymbol, { silent: true, includeBackfill: false });
+            bgSyncDoneRef.current.add(lockKey);
+          } finally {
+            bgSyncLocksRef.current.delete(lockKey);
+          }
+        })();
+      }
+    }, 2500);
+
+    const interval = setInterval(() => {
+      const tickLock = `${lockKey}:tick`;
+      if (bgSyncLocksRef.current.has(tickLock)) return;
+      bgSyncLocksRef.current.add(tickLock);
+      setAutoSyncRunning(true);
+      void (async () => {
+        try {
+          await syncTimeframesForSymbol(syncSymbol, { silent: true, includeBackfill: false });
+        } finally {
+          bgSyncLocksRef.current.delete(tickLock);
+          setAutoSyncRunning(false);
+        }
+      })();
+    }, 180000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [binanceSymbol, symbol, market, dataEnv, lookbackDays, syncTimeframes]);
 
   useEffect(() => {
     let active = true;
@@ -448,6 +754,19 @@ export default function App() {
       clearInterval(interval);
     };
   }, [market, quoteAsset, dataEnv]);
+
+  useEffect(() => {
+    if (!pairs.length) return;
+    const current = (binanceSymbol || symbol || "").toUpperCase();
+    const exists = pairs.some((item) => (item.symbol || "").toUpperCase() === current);
+    if (exists) return;
+    const fallback = pairs[0];
+    if (!fallback?.symbol) return;
+    setSelectedPair({ ...fallback, market });
+    setSymbol(fallback.symbol);
+    setBinanceSymbol(fallback.symbol);
+    setStatus(`Переключена пара на ${fallback.symbol} для ${market.toUpperCase()}`);
+  }, [pairs, binanceSymbol, symbol, market]);
 
   useEffect(() => {
     async function loadOrders() {
@@ -499,50 +818,9 @@ export default function App() {
   }, [orders, autoBreakeven, priceMap, candles, binanceSymbol]);
 
   useEffect(() => {
-    async function loadMappings() {
-      try {
-        const data = await fetchMappings();
-        setMappings(data);
-      } catch (error) {
-        setMappings([]);
-      }
-    }
-
-    loadMappings();
+    const timer = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(timer);
   }, []);
-
-  useEffect(() => {
-    if (!activeOrder) return;
-    let active = true;
-    async function loadHistory() {
-      setHistoryLoading(true);
-      try {
-        let baseSignal = null;
-        if (activeOrder.signal_id) {
-          baseSignal = await fetchSignalById(activeOrder.signal_id);
-        }
-        const symbolForSignals = baseSignal?.symbol;
-        const timeframeForSignals = baseSignal?.timeframe || activeOrder.timeframe;
-        const data = await fetchSignals(symbolForSignals, 200, timeframeForSignals);
-        if (active) {
-          setHistorySignals(data);
-        }
-      } catch (error) {
-        if (active) {
-          setHistorySignals([]);
-        }
-      } finally {
-        if (active) {
-          setHistoryLoading(false);
-        }
-      }
-    }
-
-    loadHistory();
-    return () => {
-      active = false;
-    };
-  }, [activeOrder]);
 
   useEffect(() => {
     if (!binanceSymbol) return;
@@ -555,17 +833,28 @@ export default function App() {
     )}&timeframe=${timeframe}&market=${market}&binance_symbol=${encodeURIComponent(
       binanceSymbol
     )}&data_env=${dataEnv}`;
+    let isCleanup = false;
+    let reconnectTimer = null;
     const socket = new WebSocket(wsUrl);
+    socket.onopen = () => {
+      if (isCleanup) return;
+      setWsConnected(true);
+    };
 
     socket.onmessage = (event) => {
+      if (isCleanup) return;
       const payload = JSON.parse(event.data);
       if (payload.type === "error") {
         setStatus(`Стрим: ${payload.message}`);
         return;
       }
       if (payload.type !== "kline") return;
+      setFeedSource("WS kline");
 
       const candle = payload.data;
+      setLastTickAt(Date.now());
+      setLiveTickSeq((v) => v + 1);
+      setFeedSource("WS aggTrade");
       setCandles((prev) => {
         if (!prev.length) return [candle];
         const last = prev[prev.length - 1];
@@ -593,13 +882,226 @@ export default function App() {
     };
 
     socket.onerror = () => {
+      if (isCleanup) return;
+      setWsConnected(false);
       setStatus("Ошибка стрима");
     };
 
-    return () => {
-      socket.close();
+    socket.onclose = (event) => {
+      if (isCleanup) return;
+      setWsConnected(false);
+      setStatus(`WS закрыт (${event.code}), переподключаю...`);
+      reconnectTimer = setTimeout(() => setWsRetryTick((v) => v + 1), 2000);
     };
-  }, [binanceSymbol, symbol, timeframe, market, dataEnv, maxCandlesTotal, indicatorLimit]);
+
+    return () => {
+      isCleanup = true;
+      setWsConnected(false);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      // Avoid closing CONNECTING sockets to prevent "closed before established" noise.
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close(1000, "switch_context");
+      }
+    };
+  }, [binanceSymbol, symbol, timeframe, market, dataEnv, maxCandlesTotal, indicatorLimit, wsRetryTick]);
+
+  useEffect(() => {
+    if (!binanceSymbol) return undefined;
+    const isDev = window.location.port === "5173";
+    const defaultWsBase = isDev ? "ws://localhost:8000" : window.location.origin.replace("http", "ws");
+    const wsBase = import.meta.env.VITE_WS_BASE || defaultWsBase;
+    const wsUrl = `${wsBase}/api/stream/trades?symbol=${encodeURIComponent(
+      symbol
+    )}&market=${market}&binance_symbol=${encodeURIComponent(binanceSymbol)}&data_env=${dataEnv}`;
+    const intervalMs = timeframeToMs(timeframe) ?? 60_000;
+    let closed = false;
+    let reconnectTimer = null;
+    let lastTradeTs = Date.now();
+    let socket = null;
+
+    const applyPrice = (price, tradeTimeMs) => {
+      if (!Number.isFinite(price) || price <= 0) return;
+      const openTimeMs = Math.floor(tradeTimeMs / intervalMs) * intervalMs;
+      const openTimeIso = new Date(openTimeMs).toISOString();
+      setCandles((prev) => {
+        if (!prev.length) {
+          return [
+            {
+              open_time: openTimeIso,
+              open: price,
+              high: price,
+              low: price,
+              close: price,
+              volume: 0,
+            },
+          ];
+        }
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last.open_time === openTimeIso) {
+          const nextClose = Number(price);
+          const nextHigh = Math.max(Number(last.high || nextClose), nextClose);
+          const nextLow = Math.min(Number(last.low || nextClose), nextClose);
+          if (
+            Number(last.close) === nextClose &&
+            Number(last.high) === nextHigh &&
+            Number(last.low) === nextLow
+          ) {
+            return prev;
+          }
+          next[next.length - 1] = { ...last, close: nextClose, high: nextHigh, low: nextLow };
+          return next;
+        }
+        next.push({
+          open_time: openTimeIso,
+          open: Number(last.close || price),
+          high: Math.max(Number(last.close || price), price),
+          low: Math.min(Number(last.close || price), price),
+          close: price,
+          volume: 0,
+        });
+        return next.slice(-maxCandlesTotal);
+      });
+      setLastTickAt(Date.now());
+      setLiveTickSeq((v) => v + 1);
+      setFeedSource("WS aggTrade");
+      lastTradeTs = Date.now();
+    };
+
+    const clearTimers = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const connect = () => {
+      if (closed) return;
+      socket = new WebSocket(wsUrl);
+      socket.onopen = () => {
+        if (closed) return;
+        setTradeWsConnected(true);
+        lastTradeTs = Date.now();
+        setFeedSource("WS aggTrade");
+      };
+      socket.onmessage = (event) => {
+        if (closed) return;
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload?.type !== "trade") return;
+          const price = Number(payload?.data?.price);
+          const tradeTime = new Date(payload?.data?.time || Date.now()).getTime();
+          applyPrice(price, tradeTime);
+        } catch {
+          // ignore malformed payloads
+        }
+      };
+      socket.onclose = () => {
+        if (closed) return;
+        clearTimers();
+        setTradeWsConnected(false);
+        setTradeReconnectCount((v) => v + 1);
+        reconnectTimer = setTimeout(connect, 1200);
+      };
+      socket.onerror = () => {
+        setTradeWsConnected(false);
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      setTradeWsConnected(false);
+      clearTimers();
+      try {
+        socket?.close();
+      } catch {
+        // ignore close errors
+      }
+    };
+  }, [binanceSymbol, timeframe, market, maxCandlesTotal, symbol, dataEnv]);
+
+  useEffect(() => {
+    let active = true;
+    const intervalMs = timeframeToMs(timeframe) ?? 60_000;
+    const interval = setInterval(async () => {
+      if (!active) return;
+      const staleMs = lastTickAt ? Date.now() - lastTickAt : Number.POSITIVE_INFINITY;
+      const wsHealthy = wsConnected && tradeWsConnected && staleMs < 2_500;
+      if (wsHealthy) return;
+      try {
+        const data = await fetchCandles(symbol, timeframe, 3);
+        if (!data.length) return;
+        setCandles((prev) => {
+          if (!prev.length) return data;
+          const existing = new Set(prev.map((c) => c.open_time));
+          const merged = [...prev, ...data.filter((c) => !existing.has(c.open_time))];
+          return merged.slice(-maxCandlesTotal);
+        });
+        setLastTickAt(Date.now());
+        setLiveTickSeq((v) => v + 1);
+        setFeedSource("REST fallback");
+      } catch {
+        // keep retrying silently
+      }
+      try {
+        const list = await fetchPairs(market, undefined, undefined, dataEnv);
+        const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+        const pair = list.find((item) => (item.symbol || "").replace("-", "").toUpperCase() === symbolKey);
+        const lastPrice = Number(pair?.last_price);
+        if (!Number.isFinite(lastPrice) || lastPrice <= 0) return;
+        const now = Date.now();
+        const openTimeMs = Math.floor(now / intervalMs) * intervalMs;
+        const openTimeIso = new Date(openTimeMs).toISOString();
+        setCandles((prev) => {
+          if (!prev.length) {
+            return [
+              {
+                open_time: openTimeIso,
+                open: lastPrice,
+                high: lastPrice,
+                low: lastPrice,
+                close: lastPrice,
+                volume: 0,
+              },
+            ];
+          }
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last.open_time === openTimeIso) {
+            next[next.length - 1] = {
+              ...last,
+              high: Math.max(Number(last.high || lastPrice), lastPrice),
+              low: Math.min(Number(last.low || lastPrice), lastPrice),
+              close: lastPrice,
+            };
+            return next;
+          }
+          next.push({
+            open_time: openTimeIso,
+            open: Number(last.close || lastPrice),
+            high: Math.max(Number(last.close || lastPrice), lastPrice),
+            low: Math.min(Number(last.close || lastPrice), lastPrice),
+            close: lastPrice,
+            volume: 0,
+          });
+          return next.slice(-maxCandlesTotal);
+        });
+        setLastTickAt(Date.now());
+      } catch {
+        // keep retrying silently
+      }
+    }, 1000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [wsConnected, tradeWsConnected, lastTickAt, symbol, timeframe, maxCandlesTotal, market, dataEnv, binanceSymbol]);
 
   const handleLoadMoreCandles = async (beforeIso) => {
     try {
@@ -620,29 +1122,26 @@ export default function App() {
   };
 
   const handleSync = async () => {
-    if (!binanceSymbol) {
+    const syncSymbol = binanceSymbol || (symbol && !symbol.includes("-") ? symbol.toUpperCase() : null);
+    if (!syncSymbol) {
       setStatus("Сначала выбери торговую пару Binance");
       return;
     }
     setStatus("Синхронизация истории...");
     try {
-      await syncMarket(symbol, timeframe, lookbackDays, market, binanceSymbol, dataEnv);
-      await syncMarket(symbol, h1Timeframe, lookbackDays, market, binanceSymbol, dataEnv);
-      await syncMarket(symbol, trendTimeframe, lookbackDays, market, binanceSymbol, dataEnv);
+      await syncTimeframesForSymbol(syncSymbol, { silent: true, includeBackfill: false });
       const data = await fetchCandles(symbol, timeframe, chartLimit);
       setCandles(data);
       setStatus(data.length ? "История синхронизирована" : "История отсутствует");
       if (data.length) {
         try {
           setStatus("Заполняю сигналы по истории...");
-          await backfillSignals({
-            symbol,
-            timeframe,
-            lookback_days: lookbackDays,
-            stride: backfillStride,
-            max_bars: backfillMaxBars,
+          await syncTimeframesForSymbol(syncSymbol, {
+            silent: true,
+            includeBackfill: true,
+            doSync: false,
           });
-          const signalData = await fetchSignals(symbol, 100, timeframe);
+          const signalData = await fetchSignals(symbol, 200);
           setSignals(signalData);
           try {
             const indicators = await fetchIndicators(symbol, timeframe, indicatorLimit);
@@ -683,6 +1182,7 @@ export default function App() {
         {
           h1_timeframe: h1Timeframe,
           trend_timeframe: trendTimeframe,
+          strategy,
           min_confidence: minConfidence,
           min_confirmations: minConfirmations,
           require_pattern: requirePattern,
@@ -698,7 +1198,7 @@ export default function App() {
           return [response.signal, ...prev];
         });
       }
-      const signalData = await fetchSignals(symbol, 100, timeframe);
+      const signalData = await fetchSignals(symbol, 200);
       setSignals(signalData);
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
@@ -726,6 +1226,7 @@ export default function App() {
           const explained = await explainAnalysis({
             symbol,
             timeframe,
+            strategy,
             lookback_days: lookbackDays,
             market,
             data_env: dataEnv,
@@ -736,9 +1237,15 @@ export default function App() {
             require_candle: requireCandle,
             require_volume_confirm: requireVolumeConfirm,
           });
-          setAnalysisDebug(explained.debug ?? null);
+          const debug = explained.debug ?? null;
+          setAnalysisDebug(debug);
+          const reasons = Array.isArray(debug?.reasons) ? debug.reasons : [];
+          if (reasons.length) {
+            setStatus(`Сигнала нет: ${humanizeNoSignalReason(reasons[0])}`);
+          }
         } catch (e) {
           setAnalysisDebug({ reasons: ["explain_failed"] });
+          setStatus("Сигнала нет: Не удалось получить объяснение");
         }
       } else {
         setStatus("Сигнал готов");
@@ -755,6 +1262,7 @@ export default function App() {
       const response = await runBacktest({
         symbol,
         timeframe,
+        strategy,
         lookback_days: lookbackDays,
         max_bars: backfillMaxBars,
         stride: backfillStride,
@@ -782,8 +1290,9 @@ export default function App() {
   };
 
   const handlePlaceOrder = async () => {
-    if (!latestSignal || !binanceSymbol) return;
-    if (market === "spot" && latestSignal.signal_type === "short") {
+    setConfirmOrderOpen(false);
+    if (!latestSignalForTimeframe || !binanceSymbol) return;
+    if (market === "spot" && latestSignalForTimeframe.signal_type === "short") {
       setStatus("Шорт на споте не поддерживается");
       return;
     }
@@ -794,11 +1303,11 @@ export default function App() {
     setStatus("Отправка ордера...");
     try {
       const lastPrice = candles.length ? candles[candles.length - 1].close : null;
-      await placeOrder({
+      const placed = await placeOrder({
         exchange: "binance",
         market,
         symbol: binanceSymbol,
-        side: latestSignal.signal_type === "long" ? "BUY" : "SELL",
+        side: latestSignalForTimeframe.signal_type === "long" ? "BUY" : "SELL",
         order_type: "MARKET",
         quantity,
         leverage: market === "futures" ? leverage : null,
@@ -806,18 +1315,28 @@ export default function App() {
         quote_amount: autoQuantity ? quoteAmount : null,
         auto_quantity: autoQuantity,
         timeframe,
-        signal_id: latestSignal.id,
+        signal_id: latestSignalForTimeframe.id,
         price: lastPrice,
-        stop_loss: latestSignal.meta?.trade_plan?.stop_loss ?? latestSignal.stop_loss,
-        take_profit: latestSignal.meta?.trade_plan?.take_profit ?? latestSignal.take_profit,
-        take_levels: latestSignal.meta?.trade_plan?.take_levels ?? null,
-        breakeven_at: latestSignal.meta?.trade_plan?.breakeven_at ?? null,
+        stop_loss:
+          latestSignalForTimeframe.meta?.trade_plan?.stop_loss ?? latestSignalForTimeframe.stop_loss,
+        take_profit:
+          latestSignalForTimeframe.meta?.trade_plan?.take_profit ?? latestSignalForTimeframe.take_profit,
+        take_levels: latestSignalForTimeframe.meta?.trade_plan?.take_levels ?? null,
+        breakeven_at: latestSignalForTimeframe.meta?.trade_plan?.breakeven_at ?? null,
         auto_breakeven: autoBreakeven,
         attach_orders: attachOrders,
       });
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
-      setStatus("Ордер отправлен");
+      if (placed?.status === "rejected") {
+        setStatus(`Ордер отклонен: ${placed.reject_reason || "причина не указана"}`);
+      } else if (placed?.status === "exit_failed") {
+        setStatus(`Вход открыт, но SL/TP не выставились: ${placed.reject_reason || "причина не указана"}`);
+      } else if (placed?.status === "stored") {
+        setStatus("Симуляция: ордер сохранен локально (ключи/доступ недоступны)");
+      } else {
+        setStatus("Ордер отправлен");
+      }
     } catch (error) {
       const code = error?.message ?? "unknown";
       let hint = "";
@@ -833,7 +1352,10 @@ export default function App() {
           const byQty = minQty > 0 ? minQty * price : 0;
           const required = Math.max(byQty, minNotional);
           if (required > 0) {
-            hint = ` Минимум для ${currentPair.symbol}: примерно ${required.toFixed(2)} ${quote} (minQty=${minQty}, шаг=${step}).`;
+            const requiredInput = market === "futures" && leverage > 0 ? required / leverage : required;
+            hint = ` Минимум для ${currentPair.symbol}: примерно ${requiredInput.toFixed(2)} ${quote} ${
+              market === "futures" ? "маржи" : "суммы"
+            } (minQty=${minQty}, шаг=${step}).`;
           }
         }
       }
@@ -841,62 +1363,15 @@ export default function App() {
     }
   };
 
+  const handleOpenConfirmOrder = () => {
+    if (!latestSignalForTimeframe || !binanceSymbol) return;
+    setConfirmOrderOpen(true);
+  };
+
   const handleSelectPair = async (pair) => {
     setSelectedPair({ ...pair, market });
     setSymbol(pair.symbol);
     setBinanceSymbol(pair.symbol);
-    if (pair.yfinance_symbol) {
-      try {
-        await createMapping({
-          yfinance_symbol: pair.yfinance_symbol,
-          binance_symbol: pair.symbol,
-          market,
-        });
-      } catch (error) {
-        const existing = mappings.find(
-          (item) => item.yfinance_symbol === pair.yfinance_symbol && item.market === market
-        );
-        if (existing && existing.binance_symbol !== pair.symbol) {
-          try {
-            await updateMapping(existing.id, { binance_symbol: pair.symbol, market });
-          } catch (updateError) {
-            // ignore update errors
-          }
-        }
-      }
-      const updatedMappings = await fetchMappings();
-      setMappings(updatedMappings);
-    }
-  };
-
-  const handleCreateMapping = async (payload) => {
-    try {
-      await createMapping(payload);
-      const updatedMappings = await fetchMappings();
-      setMappings(updatedMappings);
-    } catch (error) {
-      setStatus("Ошибка создания маппинга");
-    }
-  };
-
-  const handleUpdateMapping = async (id, payload) => {
-    try {
-      await updateMapping(id, payload);
-      const updatedMappings = await fetchMappings();
-      setMappings(updatedMappings);
-    } catch (error) {
-      setStatus("Ошибка обновления маппинга");
-    }
-  };
-
-  const handleDeleteMapping = async (id) => {
-    try {
-      await deleteMapping(id);
-      const updatedMappings = await fetchMappings();
-      setMappings(updatedMappings);
-    } catch (error) {
-      setStatus("Ошибка удаления маппинга");
-    }
   };
 
   const handleScan = async () => {
@@ -906,6 +1381,7 @@ export default function App() {
       const response = await scanMarket({
         market,
         timeframe,
+        strategy,
         lookback_days: lookbackDays,
         quote: quoteAsset === "ALL" ? "" : quoteAsset,
         data_env: dataEnv,
@@ -944,12 +1420,55 @@ export default function App() {
     setBinanceSymbol(nextSymbol);
   };
 
+  const handleCloseOrder = async (order) => {
+    if (!order?.id) return;
+    setStatus("Закрываю позицию...");
+    try {
+      await closeOrderPosition(order.id);
+      const updatedOrders = await fetchOrders(100);
+      setOrders(updatedOrders);
+      setStatus("Позиция закрыта");
+    } catch (error) {
+      setStatus(`Ошибка закрытия: ${error?.message ?? "unknown"}`);
+    }
+  };
+
+  const formatLiveTime = (value) => {
+    if (!value) return "--";
+    return new Date(value).toLocaleTimeString();
+  };
+  const tickLagMs = lastTickAt ? Math.max(0, nowTs - lastTickAt) : null;
+  const reconnectCount = wsRetryTick + tradeReconnectCount;
+
   return (
     <div className="app-shell">
       <header className="top-bar">
         <div>
           <h1>Торговый бот</h1>
           <p>EMA200 + фигуры + дивергенции + Фибо + Elliott</p>
+          <div className="app-tabs">
+            <button
+              type="button"
+              className={activeTab === "trade" ? "active" : ""}
+              onClick={() => setActiveTab("trade")}
+            >
+              Trade
+            </button>
+            <button
+              type="button"
+              className={activeTab === "backtest" ? "active" : ""}
+              onClick={() => setActiveTab("backtest")}
+            >
+              Backtest
+            </button>
+            <button
+              type="button"
+              className={activeTab === "scanner" ? "active" : ""}
+              onClick={() => setActiveTab("scanner")}
+            >
+              Scanner
+            </button>
+          </div>
         </div>
         <div className="top-actions">
           <button className="ghost layout-toggle" onClick={() => setShowSidePanel((prev) => !prev)}>
@@ -958,6 +1477,15 @@ export default function App() {
           <button className="ghost layout-toggle" onClick={() => setFitRequest((value) => value + 1)}>
             Вписать график
           </button>
+          <div className="live-status">
+            <span className={wsConnected ? "ok" : "bad"}>WS: {wsConnected ? "connected" : "disconnected"}</span>
+            <span>feed: {feedSource}</span>
+            <span>last tick: {formatLiveTime(lastTickAt)}</span>
+            <span>tick lag: {tickLagMs === null ? "--" : `${tickLagMs} ms`}</span>
+            <span>reconnects: {reconnectCount}</span>
+            <span>last sync: {formatLiveTime(lastSyncAt)}</span>
+            <span className={autoSyncRunning ? "ok" : ""}>auto-sync: {autoSyncRunning ? "running" : "idle"}</span>
+          </div>
           <div className="status-pill">{status}</div>
         </div>
       </header>
@@ -968,6 +1496,7 @@ export default function App() {
           gridTemplateColumns: showSidePanel ? `minmax(0, 1fr) ${sidebarWidth}px` : "minmax(0, 1fr)",
         }}
       >
+        {activeTab === "trade" ? (
         <section className="chart-card">
           <div className="chart-header">
             <div>
@@ -1015,12 +1544,13 @@ export default function App() {
             <ChartPanel
               candles={candles}
               signals={signals}
+              openOrders={orders.filter((o) => (o.symbol || "").toUpperCase() === (binanceSymbol || symbol || "").toUpperCase())}
               pricePrecision={currentPair?.price_precision}
               indicatorData={indicatorData}
               height={chartHeight}
               dataKey={`${symbol}-${timeframe}-${market}`}
               tradeHistory={chartTrades}
-              tradeMarkerMode={backtestTrades.length ? "trades" : "signals"}
+              tradeMarkerMode={activeTab === "backtest" ? "trades" : "signals"}
               showEma={showEma}
               showFib={showFib}
               showDivergence={showDivergence}
@@ -1044,14 +1574,56 @@ export default function App() {
               showTradePaths={showTradePaths}
               autoFit={autoFit}
               fitRequest={fitRequest}
+              liveTickSeq={liveTickSeq}
               onLoadMoreCandles={handleLoadMoreCandles}
+              signalTradePlan={chartTradePlan}
             />
             {candles.length === 0 ? (
               <div className="chart-empty">Нет данных. Нажми "Синхронизировать историю".</div>
             ) : null}
           </div>
-          <TradeHistoryPanel trades={displayedTrades} />
+          <TradeHistoryPanel trades={displayedTrades} source={tradeHistorySource} />
         </section>
+        ) : null}
+        {activeTab === "backtest" ? (
+          <section className="chart-card">
+            <div className="panel-title">Backtest Workspace</div>
+            <StatsPanel stats={activeStats} />
+            <TradeHistoryPanel trades={displayedTrades} source={tradeHistorySource} />
+            <AnalysisDebugPanel debug={analysisDebug} />
+          </section>
+        ) : null}
+        {activeTab === "scanner" ? (
+          <section className="chart-card">
+            <div className="panel-title">Scanner Workspace</div>
+            <ScanResultsPanel
+              results={scanResults}
+              running={scanRunning}
+              limit={scanLimit}
+              maxPairs={scanMaxPairs}
+              minVolatility={minVolatility}
+              minConfidence={minConfidence}
+              minConfirmations={minConfirmations}
+              requirePattern={requirePattern}
+              requireDivergence={requireDivergence}
+              requireCandle={requireCandle}
+              requireVolumeConfirm={requireVolumeConfirm}
+              autoSync={scanAutoSync}
+              onLimitChange={setScanLimit}
+              onMaxPairsChange={setScanMaxPairs}
+              onMinVolatilityChange={setMinVolatility}
+              onMinConfidenceChange={setMinConfidence}
+              onMinConfirmationsChange={setMinConfirmations}
+              onRequirePatternChange={setRequirePattern}
+              onRequireDivergenceChange={setRequireDivergence}
+              onRequireCandleChange={setRequireCandle}
+              onRequireVolumeConfirmChange={setRequireVolumeConfirm}
+              onAutoSyncChange={setScanAutoSync}
+              onRunScan={handleScan}
+              onSelectResult={handleSelectScanResult}
+            />
+          </section>
+        ) : null}
         {showSidePanel ? (
           <aside className="side-panel">
             <ControlPanel
@@ -1094,6 +1666,7 @@ export default function App() {
               backfillMaxBars={backfillMaxBars}
               autoFit={autoFit}
               minConfidence={minConfidence}
+              strategy={strategy}
               minConfirmations={minConfirmations}
               requirePattern={requirePattern}
               requireDivergence={requireDivergence}
@@ -1138,6 +1711,7 @@ export default function App() {
               onBackfillMaxBarsChange={setBackfillMaxBars}
               onAutoFitChange={setAutoFit}
               onMinConfidenceChange={setMinConfidence}
+              onStrategyChange={setStrategy}
               onMinConfirmationsChange={setMinConfirmations}
               onRequirePatternChange={setRequirePattern}
               onRequireDivergenceChange={setRequireDivergence}
@@ -1154,9 +1728,10 @@ export default function App() {
               mode={mode}
               onModeToggle={() => setMode((prev) => (prev === "auto" ? "semi" : "auto"))}
             />
+            {activeTab === "scanner" || activeTab === "trade" ? (
             <PairsPanel
               pairs={filteredPairs}
-              selectedSymbol={symbol}
+              selectedSymbol={binanceSymbol || symbol}
               search={pairSearch}
               minVolatility={minVolatility}
               maxPrice={maxPrice}
@@ -1170,60 +1745,62 @@ export default function App() {
               onSelectPair={handleSelectPair}
               loading={pairsLoading}
             />
-            <ScanResultsPanel
-              results={scanResults}
-              running={scanRunning}
-              limit={scanLimit}
-              maxPairs={scanMaxPairs}
-              minVolatility={minVolatility}
-              minConfidence={minConfidence}
-              minConfirmations={minConfirmations}
-              requirePattern={requirePattern}
-              requireDivergence={requireDivergence}
-              requireCandle={requireCandle}
-              requireVolumeConfirm={requireVolumeConfirm}
-              autoSync={scanAutoSync}
-              onLimitChange={setScanLimit}
-              onMaxPairsChange={setScanMaxPairs}
-              onMinVolatilityChange={setMinVolatility}
-              onMinConfidenceChange={setMinConfidence}
-              onMinConfirmationsChange={setMinConfirmations}
-              onRequirePatternChange={setRequirePattern}
-              onRequireDivergenceChange={setRequireDivergence}
-              onRequireCandleChange={setRequireCandle}
-              onRequireVolumeConfirmChange={setRequireVolumeConfirm}
-              onAutoSyncChange={setScanAutoSync}
-              onRunScan={handleScan}
-              onSelectResult={handleSelectScanResult}
-            />
-            {mode === "semi" && latestSignal && binanceSymbol ? (
-              <button className="primary confirm-order" onClick={handlePlaceOrder}>
-                Подтвердить ордер ({latestSignal.signal_type.toUpperCase()})
+            ) : null}
+            {activeTab === "trade" && mode === "semi" && latestSignalForTimeframe && binanceSymbol ? (
+              <button className="primary confirm-order" onClick={handleOpenConfirmOrder}>
+                Подтвердить ордер ({latestSignalForTimeframe.signal_type.toUpperCase()})
               </button>
             ) : null}
-            <StatsPanel stats={activeStats} />
-            <AccountPanel summary={accountSummary} trades={accountTrades} />
-            <AnalysisDebugPanel debug={analysisDebug} />
+            {activeTab === "backtest" ? <StatsPanel stats={activeStats} /> : null}
+            {activeTab === "trade" ? <AccountPanel summary={accountSummary} trades={accountTrades} /> : null}
+            {activeTab !== "scanner" ? <AnalysisDebugPanel debug={analysisDebug} /> : null}
+            {activeTab === "trade" ? (
             <div className="signals-panel">
               <div className="signals-title">Сигналы</div>
-              <SignalList signals={signals} />
+              <SignalList signals={signalsForTimeframe} />
             </div>
-            <TradeJournal orders={orders} priceMap={priceMap} onSelectOrder={setActiveOrder} />
-            <MappingTable
-              mappings={mappings}
-              onCreate={handleCreateMapping}
-              onUpdate={handleUpdateMapping}
-              onDelete={handleDeleteMapping}
-            />
+            ) : null}
+            {activeTab === "trade" ? (
+              <TradeJournal
+                orders={orders}
+                priceMap={priceMap}
+                futuresPositionMap={futuresPositionMap}
+                onSelectOrder={setActiveOrder}
+                onCloseOrder={handleCloseOrder}
+              />
+            ) : null}
           </aside>
         ) : null}
       </main>
-      <SignalHistoryModal
+      <OrderDetailsModal
         open={Boolean(activeOrder)}
         order={activeOrder}
-        signals={historySignals}
-        loading={historyLoading}
+        trades={accountTrades}
+        loading={!accountSummary}
         onClose={() => setActiveOrder(null)}
+      />
+      <OrderConfirmModal
+        open={confirmOrderOpen}
+        onClose={() => setConfirmOrderOpen(false)}
+        onConfirm={handlePlaceOrder}
+        market={market}
+        side={latestSignalForTimeframe?.signal_type === "short" ? "SELL" : "BUY"}
+        symbol={binanceSymbol || symbol}
+        orderType="MARKET"
+        quantity={Number(quantity)}
+        onQuantityChange={setQuantity}
+        quoteAmount={Number(quoteAmount)}
+        onQuoteAmountChange={setQuoteAmount}
+        autoQuantity={autoQuantity}
+        leverage={leverage}
+        onLeverageChange={setLeverage}
+        entryPrice={candles.length ? Number(candles[candles.length - 1].close) : null}
+        stopLoss={latestSignalForTimeframe?.meta?.trade_plan?.stop_loss ?? latestSignalForTimeframe?.stop_loss}
+        takeProfit={latestSignalForTimeframe?.meta?.trade_plan?.take_profit ?? latestSignalForTimeframe?.take_profit}
+        takeLevels={latestSignalForTimeframe?.meta?.trade_plan?.take_levels ?? null}
+        minQty={Number(currentPair?.min_qty ?? 0)}
+        minNotional={Number(currentPair?.min_notional ?? 0)}
+        stepSize={Number(currentPair?.step_size ?? 0)}
       />
     </div>
   );

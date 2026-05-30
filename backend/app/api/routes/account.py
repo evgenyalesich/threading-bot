@@ -131,6 +131,14 @@ async def account_summary(
                 upnl_val = float(upnl) if upnl is not None else None
                 lev = item.get("leverage")
                 lev_val = int(lev) if lev is not None else None
+                margin = item.get("positionInitialMargin") or item.get("initialMargin") or item.get("isolatedMargin")
+                margin_val = float(margin) if margin is not None else None
+                notional = item.get("notional")
+                notional_val = abs(float(notional)) if notional is not None else None
+                if not lev_val and margin_val and margin_val > 0 and notional_val is not None:
+                    lev_val = round(notional_val / margin_val)
+                if (margin_val is None or margin_val <= 0) and entry > 0 and lev_val:
+                    margin_val = abs(amt) * entry / lev_val
                 side = "LONG" if amt > 0 else "SHORT" if amt < 0 else None
                 positions.append(
                     FuturesPositionItem(
@@ -139,6 +147,7 @@ async def account_summary(
                         entry_price=entry,
                         mark_price=mark_val,
                         unrealized_profit=upnl_val,
+                        margin=margin_val,
                         leverage=lev_val,
                         side=side,
                     )

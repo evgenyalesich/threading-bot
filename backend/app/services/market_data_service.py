@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
-
-import pandas as pd
-import yfinance as yf
 
 from app.repositories.candle_repository import CandleRepository
 from app.services.binance_candle_service import BinanceCandleService
@@ -27,58 +23,19 @@ class MarketDataService:
         market: str | None = None,
         binance_symbol: str | None = None,
     ) -> int:
-        if self._binance_service and binance_symbol and market:
-            try:
-                records = await self._fetch_binance(
-                    symbol=symbol,
-                    binance_symbol=binance_symbol,
-                    timeframe=timeframe,
-                    lookback_days=lookback_days,
-                    market=market,
-                )
-            except Exception:
-                return 0
-            return await self._candle_repository.upsert_many(records)
-
-        data = await asyncio.to_thread(
-            yf.download,
-            symbol,
-            period=f"{lookback_days}d",
-            interval=timeframe,
-            auto_adjust=False,
-            progress=False,
-        )
-        if data.empty:
+        if not (self._binance_service and binance_symbol and market):
             return 0
 
-        data = data.reset_index()
-        timestamp_col = "Datetime" if "Datetime" in data.columns else "Date"
-        records: list[dict] = []
-        for _, row in data.iterrows():
-            ts_value = row[timestamp_col]
-            if isinstance(ts_value, pd.Timestamp):
-                open_time = ts_value.to_pydatetime()
-            elif isinstance(ts_value, datetime):
-                open_time = ts_value
-            else:
-                open_time = datetime.fromisoformat(str(ts_value))
-            if open_time.tzinfo is None:
-                open_time = open_time.replace(tzinfo=timezone.utc)
-
-            records.append(
-                {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "open_time": open_time,
-                    "open": float(row["Open"]),
-                    "high": float(row["High"]),
-                    "low": float(row["Low"]),
-                    "close": float(row["Close"]),
-                    "volume": float(row.get("Volume", 0.0)),
-                    "source": "yfinance",
-                }
+        try:
+            records = await self._fetch_binance(
+                symbol=symbol,
+                binance_symbol=binance_symbol,
+                timeframe=timeframe,
+                lookback_days=lookback_days,
+                market=market,
             )
-
+        except Exception:
+            return 0
         return await self._candle_repository.upsert_many(records)
 
     async def _fetch_binance(

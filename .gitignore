@@ -37,6 +37,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local diagnostics
+/backend/tmp_*_probe.py
+
 # Databases / local state
 *.sqlite
 *.db

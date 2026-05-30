@@ -82,6 +82,15 @@ class BinanceMarketService:
                     return {"min_qty": None, "max_qty": None, "step_size": None}
         return {"min_qty": None, "max_qty": None, "step_size": None}
 
+    def _extract_tick_size(self, filters: list[dict]) -> float | None:
+        for entry in filters:
+            if entry.get("filterType") == "PRICE_FILTER":
+                try:
+                    return float(entry.get("tickSize", 0) or 0)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
     def _merge_pairs(self, exchange_info: dict, tickers: list[dict], market: str) -> list[dict]:
         ticker_map = {item["symbol"]: item for item in tickers}
         pairs: list[dict] = []
@@ -102,6 +111,7 @@ class BinanceMarketService:
                 volatility = (high_price - low_price) / last_price * 100
 
             lot_size = self._extract_lot_size(symbol_info.get("filters", []))
+            tick_size = self._extract_tick_size(symbol_info.get("filters", []))
             pairs.append(
                 {
                     "market": market,
@@ -123,6 +133,7 @@ class BinanceMarketService:
                     "min_qty": lot_size["min_qty"],
                     "max_qty": lot_size["max_qty"],
                     "step_size": lot_size["step_size"],
+                    "tick_size": tick_size,
                     "price_precision": symbol_info.get("pricePrecision"),
                     "quantity_precision": symbol_info.get("quantityPrecision"),
                 }

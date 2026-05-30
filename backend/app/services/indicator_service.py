@@ -20,8 +20,9 @@ class IndicatorService:
         delta = series.diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.rolling(window=period).mean()
-        avg_loss = loss.rolling(window=period).mean()
+        # Wilder smoothing: alpha = 1/period
+        avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+        avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
         rs = avg_gain / avg_loss.replace(0, pd.NA)
         rsi = 100 - (100 / (1 + rs))
         return rsi.fillna(0)
@@ -46,7 +47,8 @@ class IndicatorService:
         low_close = (low - close.shift()).abs()
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = ranges.max(axis=1)
-        return true_range.rolling(window=period).mean().fillna(0)
+        # Wilder smoothing for ATR
+        return true_range.ewm(alpha=1 / period, adjust=False, min_periods=period).mean().fillna(0)
 
     def bbands(
         self,

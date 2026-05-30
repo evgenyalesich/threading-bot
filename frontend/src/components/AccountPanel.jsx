@@ -11,6 +11,14 @@ function humanizeAccountError(code) {
   return map[code] || code;
 }
 
+function formatRoi(position) {
+  const upnl = Number(position.unrealized_profit);
+  const margin = Number(position.margin);
+  if (!Number.isFinite(upnl) || !Number.isFinite(margin) || margin <= 0) return "-";
+  const roi = (upnl / margin) * 100;
+  return `${roi >= 0 ? "+" : ""}${roi.toFixed(2)}%`;
+}
+
 export default function AccountPanel({ summary, trades = [] }) {
   return (
     <div className="account-panel">
@@ -73,6 +81,7 @@ export default function AccountPanel({ summary, trades = [] }) {
                 {p.side || "-"} {formatNum(Number(p.position_amt), 4)} x{p.leverage ?? "-"}
               </span>
               <span>вход {formatNum(Number(p.entry_price), 2)}</span>
+              <span>ROI {formatRoi(p)}</span>
             </div>
           ))}
           {!summary.futures_positions?.length ? <div className="empty-state">Позиции отсутствуют</div> : null}

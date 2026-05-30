@@ -12,7 +12,8 @@ class BacktestRequest(BaseSchema):
     trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
     data_env: str = "real"
     auto_sync: bool = False
-    min_confidence: float = 0.45
+    strategy: str = "ema200_fib_divergence"
+    min_confidence: float = 0.35
     min_confirmations: int = 1
     require_pattern: bool = False
     require_divergence: bool = False

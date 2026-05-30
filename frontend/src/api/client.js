@@ -192,6 +192,12 @@ export async function moveStopToPrice(orderId, price) {
   });
 }
 
+export async function closeOrderPosition(orderId) {
+  return request(`/orders/${orderId}/close`, {
+    method: "POST",
+  });
+}
+
 export async function fetchIndicators(symbol, timeframe, limit = 240) {
   const params = new URLSearchParams({ symbol, timeframe, limit: String(limit) });
   return request(`/market/indicators?${params.toString()}`);

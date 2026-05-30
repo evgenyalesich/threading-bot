@@ -5,11 +5,12 @@ class BackfillRequest(BaseSchema):
     symbol: str
     timeframe: str
     lookback_days: int = 120
+    strategy: str = "ema200_fib_divergence"
     stride: int = 5
     max_bars: int = 1000
     h1_timeframe: str = "1h"      # Entry signal timeframe (legacy)
     trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
-    min_confidence: float = 0.45
+    min_confidence: float = 0.35
     min_confirmations: int = 1
     require_pattern: bool = False
     require_divergence: bool = False

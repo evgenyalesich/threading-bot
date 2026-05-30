@@ -25,6 +25,10 @@ class OrderRead(BaseSchema):
     take_order_id: str | None
     oco_order_id: str | None
     trade_env: str | None
+    exit_price: float | None = None
+    realized_pnl: float | None = None
+    closed_at: datetime | None = None
     status: str
     client_order_id: str | None
+    reject_reason: str | None = None
     created_at: datetime

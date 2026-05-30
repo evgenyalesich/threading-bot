@@ -70,6 +70,20 @@ class ThreeScreensStrategy(BaseStrategy):
         ema26_now = float(ema26.iloc[-1])
         ema26_prev = float(ema26.iloc[-4])
         h1_trend = 1 if ema26_now > ema26_prev else -1
+        trend_atr = self._ind.atr(
+            trend_data["high"].astype(float),
+            trend_data["low"].astype(float),
+            trend_close,
+            period=14,
+        )
+        trend_atr_now = float(trend_atr.iloc[-1])
+        trend_slope = abs(ema26_now - ema26_prev)
+        min_trend_slope = trend_atr_now * 0.08
+        if trend_atr_now > 0 and trend_slope < min_trend_slope:
+            debug["reasons"].append("trend_too_flat")
+            debug["trend_slope"] = trend_slope
+            debug["min_trend_slope"] = min_trend_slope
+            return None, debug
 
         # EMA200 alignment: trade WITH the macro trend only
         ema200_ok = True
@@ -114,13 +128,22 @@ class ThreeScreensStrategy(BaseStrategy):
         atr_avg = float(atr.rolling(window=20).mean().iloc[-1]) if len(atr) >= 20 else last_atr
         vol_avg = float(volume.rolling(window=20).mean().iloc[-1]) if len(volume) >= 20 else float(volume.mean())
         last_vol = float(volume.iloc[-1])
+        body = abs(float(close.iloc[-1]) - float(data["open"].astype(float).iloc[-1]))
+        candle_range = max(float(high.iloc[-1]) - float(low.iloc[-1]), 0.0)
+        body_ratio = body / candle_range if candle_range > 0 else 0.0
+
+        if atr_avg > 0 and last_atr < atr_avg * 0.75:
+            debug["reasons"].append("volatility_too_low")
+            debug["atr"] = last_atr
+            debug["atr_avg"] = atr_avg
+            return None, debug
 
         if h1_trend == 1:
-            stoch_confirm = last_k < 25 and last_d < 25
-            rsi_confirm = last_rsi < 45
+            stoch_confirm = last_k < 30 and last_d < 30
+            rsi_confirm = last_rsi < 50
         else:
-            stoch_confirm = last_k > 75 and last_d > 75
-            rsi_confirm = last_rsi > 55
+            stoch_confirm = last_k > 70 and last_d > 70
+            rsi_confirm = last_rsi > 50
 
         debug.update({
             "stoch_k": last_k,
@@ -130,19 +153,22 @@ class ThreeScreensStrategy(BaseStrategy):
             "rsi_confirm": rsi_confirm,
             "atr": last_atr,
             "atr_avg": atr_avg,
+            "body_ratio": body_ratio,
         })
 
-        if not stoch_confirm:
-            debug["reasons"].append("stoch_not_confirming")
-            return None, debug
-        if not rsi_confirm:
-            debug["reasons"].append("rsi_not_confirming")
+        confirmations = int(stoch_confirm) + int(rsi_confirm)
+        debug["confirmations"] = confirmations
+        if confirmations < max(int(self._filters.min_confirmations), 1):
+            if not stoch_confirm:
+                debug["reasons"].append("stoch_not_confirming")
+            if not rsi_confirm:
+                debug["reasons"].append("rsi_not_confirming")
             return None, debug
 
         side = "long" if h1_trend == 1 else "short"
 
         # Confidence
-        confidence = 0.40
+        confidence = 0.35
         if stoch_confirm:
             confidence += 0.20
         if rsi_confirm:
@@ -162,6 +188,10 @@ class ThreeScreensStrategy(BaseStrategy):
         # Screen 3: MARKET entry at close of signal candle (1H)
         entry = float(close.iloc[-1])
 
+        if body_ratio < 0.18:
+            debug["reasons"].append("weak_signal_candle")
+            return None, debug
+
         # Stop-loss: local extremum of last 10 bars, minimum 1.0 ATR from entry
         lookback_sl = min(10, len(data))
         min_sl_dist = last_atr * 1.0
@@ -176,6 +206,10 @@ class ThreeScreensStrategy(BaseStrategy):
         risk = abs(entry - stop_loss)
         if risk <= 0:
             debug["reasons"].append("zero_risk")
+            return None, debug
+        if entry > 0 and risk / entry > 0.035:
+            debug["reasons"].append("risk_too_wide")
+            debug["risk_pct"] = risk / entry
             return None, debug
 
         # Take-profit: TP1=1.5R (breakeven trigger), TP2=2.5R (full exit)

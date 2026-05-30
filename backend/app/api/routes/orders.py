@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +21,97 @@ router = APIRouter()
 settings = Settings()
 
 
+def _to_float(value) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def _extract_fill_price(response: dict | None, fallback: float | None = None) -> float | None:
+    if not isinstance(response, dict):
+        return fallback
+    for key in ("avgPrice", "price", "stopPrice"):
+        price = _to_float(response.get(key))
+        if price is not None:
+            return price
+    fills = response.get("fills")
+    if isinstance(fills, list) and fills:
+        total_qty = 0.0
+        total_quote = 0.0
+        for fill in fills:
+            price = _to_float(fill.get("price"))
+            qty = _to_float(fill.get("qty"))
+            if price is None or qty is None:
+                continue
+            total_qty += qty
+            total_quote += price * qty
+        if total_qty > 0:
+            return total_quote / total_qty
+    return fallback
+
+
+def _order_pnl_pct(order, exit_price: float | None) -> float | None:
+    entry = _to_float(order.price)
+    if entry is None or exit_price is None:
+        return None
+    side = 1 if order.side.upper() == "BUY" else -1
+    leverage = order.leverage if order.market == "futures" and order.leverage else 1
+    return ((exit_price - entry) / entry) * 100 * side * leverage
+
+
+async def _extract_close_fill_price(
+    exchange: BinanceExchange,
+    market: str,
+    symbol: str,
+    response: dict | None,
+    fallback: float | None,
+) -> float | None:
+    response_price = _extract_fill_price(response)
+    if response_price is not None:
+        return response_price
+    order_id = str((response or {}).get("orderId") or "")
+    if not order_id:
+        return fallback
+    for attempt in range(3):
+        if attempt:
+            await asyncio.sleep(0.15)
+        try:
+            trades = await exchange.get_account_trades(market, symbol, limit=50)
+        except Exception:
+            continue
+        fills = [trade for trade in trades if str(trade.get("orderId") or "") == order_id]
+        total_qty = 0.0
+        total_quote = 0.0
+        for fill in fills:
+            price = _to_float(fill.get("price"))
+            qty = _to_float(fill.get("qty") or fill.get("executedQty"))
+            if price is None or qty is None:
+                continue
+            total_qty += qty
+            total_quote += price * qty
+        if total_qty > 0:
+            return total_quote / total_qty
+    return fallback
+
+
+async def _position_is_flat(exchange: BinanceExchange, symbol: str) -> bool:
+    try:
+        position = await exchange.get_position(symbol)
+    except Exception:
+        return False
+    if not position:
+        return True
+    amount = _to_float(position.get("positionAmt"))
+    if amount is None:
+        try:
+            amount = abs(float(position.get("positionAmt") or 0))
+        except (TypeError, ValueError):
+            return False
+    return abs(amount) <= 0.0
+
+
 @router.post("")
 async def create_order(
     payload: OrderCreate,
@@ -31,6 +125,9 @@ async def create_order(
     if api_key and api_secret:
         exchange = BinanceExchange(trade_settings)
 
+    sizing_service = OrderSizingService(BinanceMarketService(trade_settings))
+    symbol_normalized = payload.symbol.replace("-", "").upper()
+
     if payload.auto_quantity or payload.quote_amount is not None:
         if payload.quote_amount is None:
             raise HTTPException(status_code=400, detail="quote_amount_required")
@@ -38,22 +135,156 @@ async def create_order(
         price = payload.price
         if not price:
             pairs = await market_service.list_pairs(market)
-            symbol = payload.symbol.replace("-", "").upper()
-            pair = next((item for item in pairs if item.get("symbol") == symbol), None)
+            pair = next((item for item in pairs if item.get("symbol") == symbol_normalized), None)
             price = pair.get("last_price") if pair else None
-        sizing = await OrderSizingService(market_service).size_order(
-            payload.symbol.replace("-", "").upper(),
+        sizing = await sizing_service.size_order(
+            symbol_normalized,
             market,
             payload.quote_amount,
             price,
+            leverage=payload.leverage,
         )
         if sizing.error:
             raise HTTPException(status_code=400, detail=sizing.error)
-        payload = payload.model_copy(update={"quantity": sizing.quantity, "price": price})
+        payload = payload.model_copy(update={"quantity": sizing.quantity, "price": sizing.price or price})
+    else:
+        normalized = await sizing_service.normalize_order(
+            symbol_normalized,
+            market,
+            payload.quantity,
+            payload.price,
+        )
+        if normalized.error:
+            raise HTTPException(status_code=400, detail=normalized.error)
+        payload = payload.model_copy(
+            update={
+                "quantity": normalized.quantity if normalized.quantity is not None else payload.quantity,
+                "price": normalized.price if normalized.price is not None else payload.price,
+            }
+        )
+
+    # Normalize protective levels to exchange price tick size.
+    sl_norm = None
+    tp_norm = None
+    if payload.stop_loss is not None:
+        sl_res = await sizing_service.normalize_order(symbol_normalized, market, None, payload.stop_loss)
+        sl_norm = sl_res.price if sl_res.price is not None else payload.stop_loss
+    if payload.take_profit is not None:
+        tp_res = await sizing_service.normalize_order(symbol_normalized, market, None, payload.take_profit)
+        tp_norm = tp_res.price if tp_res.price is not None else payload.take_profit
+
+    take_levels_norm = None
+    if payload.take_levels:
+        take_levels_norm = []
+        for level in payload.take_levels:
+            lvl_res = await sizing_service.normalize_order(symbol_normalized, market, None, level)
+            take_levels_norm.append(lvl_res.price if lvl_res.price is not None else level)
+
+    payload = payload.model_copy(
+        update={
+            "stop_loss": sl_norm,
+            "take_profit": tp_norm,
+            "take_levels": take_levels_norm if take_levels_norm is not None else payload.take_levels,
+        }
+    )
 
     service = ExecutionService(order_repo, exchange)
     order = await service.place_order(payload, market=market)
     return OrderRead.model_validate(order)
+
+
+@router.post("/{order_id}/close")
+async def close_order_position(
+    order_id: int,
+    session: AsyncSession = Depends(get_db_session),
+) -> OrderRead:
+    order_repo = OrderRepository(session)
+    order = await order_repo.get(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.status in {"closed", "filled", "cancelled"}:
+        return OrderRead.model_validate(order)
+
+    trade_env = (order.trade_env or "testnet").lower()
+    api_key, api_secret, trade_settings = resolve_api_credentials(settings, trade_env, order.market)
+    if not api_key or not api_secret:
+        exit_price = order.exit_price or order.price
+        updated = await order_repo.update(
+            order,
+            {
+                "status": "closed",
+                "reject_reason": "closed_locally_no_keys",
+                "exit_price": exit_price,
+                "realized_pnl": _order_pnl_pct(order, exit_price),
+                "closed_at": datetime.utcnow(),
+            },
+        )
+        return OrderRead.model_validate(updated)
+
+    exchange = BinanceExchange(trade_settings)
+    side = "SELL" if order.side.upper() == "BUY" else "BUY"
+    try:
+        if order.market == "futures":
+            close_response = await exchange.place_order(
+                {
+                    "market": "futures",
+                    "order": {
+                        "symbol": order.symbol,
+                        "side": side,
+                        "type": "MARKET",
+                        "quantity": order.quantity,
+                        "reduceOnly": True,
+                    },
+                }
+            )
+        else:
+            close_response = await exchange.place_order(
+                {
+                    "market": "spot",
+                    "order": {
+                        "symbol": order.symbol,
+                        "side": side,
+                        "type": "MARKET",
+                        "quantity": order.quantity,
+                    },
+                }
+            )
+        exit_price = await _extract_close_fill_price(
+            exchange,
+            order.market,
+            order.symbol,
+            close_response,
+            fallback=order.exit_price or order.price,
+        )
+        updated = await order_repo.update(
+            order,
+            {
+                "status": "closed",
+                "reject_reason": None,
+                "exit_price": exit_price,
+                "realized_pnl": _order_pnl_pct(order, exit_price),
+                "closed_at": datetime.utcnow(),
+            },
+        )
+    except Exception as exc:
+        message = str(exc)
+        if order.market == "futures" and "ReduceOnly Order is rejected" in message:
+            if await _position_is_flat(exchange, order.symbol):
+                exit_price = order.exit_price or order.price
+                updated = await order_repo.update(
+                    order,
+                    {
+                        "status": "closed",
+                        "reject_reason": "position_already_flat_after_reduce_only_reject",
+                        "exit_price": exit_price,
+                        "realized_pnl": _order_pnl_pct(order, exit_price),
+                        "closed_at": datetime.utcnow(),
+                    },
+                )
+                return OrderRead.model_validate(updated)
+        updated = await order_repo.update(order, {"status": "close_failed", "reject_reason": message[:500]})
+    return OrderRead.model_validate(updated)
 
 
 @router.post("/{order_id}/breakeven")
@@ -143,6 +374,14 @@ async def move_stop(
     exchange = None
     if api_key and api_secret:
         exchange = BinanceExchange(trade_settings)
+
+    # Normalize stop price to symbol tick size / precision before sending to exchange.
+    sizing_service = OrderSizingService(BinanceMarketService(trade_settings))
+    symbol_normalized = order.symbol.replace("-", "").upper()
+    norm = await sizing_service.normalize_order(symbol_normalized, order.market, None, stop_price)
+    if norm.error:
+        raise HTTPException(status_code=400, detail=norm.error)
+    stop_price = norm.price if norm.price is not None else stop_price
 
     exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
     if exchange:

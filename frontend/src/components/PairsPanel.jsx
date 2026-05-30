@@ -84,7 +84,6 @@ export default function PairsPanel({
                   {pair.symbol}
                   {minNotional ? ` · мин $${minNotional}` : ""}
                 </span>
-                {pair.yfinance_symbol ? <span>YF: {pair.yfinance_symbol}</span> : null}
               </div>
               <div>
                 <span className="pair-vol">{volatility.toFixed(2)}%</span>

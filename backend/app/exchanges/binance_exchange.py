@@ -110,18 +110,23 @@ class BinanceExchange(BaseExchange):
         quantity: float,
         stop_price: float,
         reduce_only: bool = True,
+        close_position: bool = False,
     ) -> dict:
         def _place():
             client = self._client_for("futures")
-            return client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type="STOP_MARKET",
-                stopPrice=stop_price,
-                closePosition=False,
-                reduceOnly=reduce_only,
-                quantity=quantity,
-            )
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "STOP_MARKET",
+                "stopPrice": stop_price,
+                "closePosition": close_position,
+            }
+            if close_position:
+                params["workingType"] = "CONTRACT_PRICE"
+            else:
+                params["reduceOnly"] = reduce_only
+                params["quantity"] = quantity
+            return client.futures_create_order(**params)
 
         return await asyncio.to_thread(_place)
 
@@ -132,18 +137,23 @@ class BinanceExchange(BaseExchange):
         quantity: float,
         take_profit: float,
         reduce_only: bool = True,
+        close_position: bool = False,
     ) -> dict:
         def _place():
             client = self._client_for("futures")
-            return client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type="TAKE_PROFIT_MARKET",
-                stopPrice=take_profit,
-                closePosition=False,
-                reduceOnly=reduce_only,
-                quantity=quantity,
-            )
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "TAKE_PROFIT_MARKET",
+                "stopPrice": take_profit,
+                "closePosition": close_position,
+            }
+            if close_position:
+                params["workingType"] = "CONTRACT_PRICE"
+            else:
+                params["reduceOnly"] = reduce_only
+                params["quantity"] = quantity
+            return client.futures_create_order(**params)
 
         return await asyncio.to_thread(_place)
 
@@ -171,3 +181,22 @@ class BinanceExchange(BaseExchange):
             return client.futures_change_leverage(symbol=symbol.upper(), leverage=int(leverage))
 
         return await asyncio.to_thread(_set)
+
+    async def get_position(self, symbol: str) -> dict | None:
+        def _get():
+            client = self._client_for("futures")
+            rows = client.futures_position_information(symbol=symbol.upper())
+            if not rows:
+                return None
+            return rows[0]
+
+        return await asyncio.to_thread(_get)
+
+    async def get_account_trades(self, market: str, symbol: str, limit: int = 50) -> list[dict]:
+        def _get():
+            client = self._client_for(market)
+            if market == "futures":
+                return client.futures_account_trades(symbol=symbol.upper(), limit=int(limit))
+            return client.get_my_trades(symbol=symbol.upper(), limit=int(limit))
+
+        return await asyncio.to_thread(_get)

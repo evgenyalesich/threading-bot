@@ -314,7 +314,21 @@ class BacktestService:
         max_dd = 0.0
         trade_returns: list[float] = []
         for trade in trades:
-            trade_ret = (trade.pnl / 100.0) * risk_per_trade
+            stop_loss = None
+            if isinstance(trade.trade_plan, dict):
+                stop_loss = trade.trade_plan.get("stop_loss")
+            stop_dist_pct = 0.0
+            try:
+                if stop_loss is not None and trade.entry > 0:
+                    stop_dist_pct = abs((trade.entry - float(stop_loss)) / trade.entry) * 100.0
+            except Exception:
+                stop_dist_pct = 0.0
+            if stop_dist_pct > 0:
+                r_multiple = trade.pnl / stop_dist_pct
+                trade_ret = r_multiple * risk_per_trade
+            else:
+                # Fallback for legacy trades without stop in payload.
+                trade_ret = (trade.pnl / 100.0) * risk_per_trade
             trade_returns.append(trade_ret)
             equity *= 1 + trade_ret
             if equity > peak:

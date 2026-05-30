@@ -24,6 +24,7 @@ class BaseExchange:
         quantity: float,
         stop_price: float,
         reduce_only: bool = True,
+        close_position: bool = False,
     ) -> dict:
         raise NotImplementedError
 
@@ -34,6 +35,7 @@ class BaseExchange:
         quantity: float,
         take_profit: float,
         reduce_only: bool = True,
+        close_position: bool = False,
     ) -> dict:
         raise NotImplementedError
 
@@ -44,4 +46,10 @@ class BaseExchange:
         raise NotImplementedError
 
     async def set_leverage(self, symbol: str, leverage: int) -> dict:
+        raise NotImplementedError
+
+    async def get_position(self, symbol: str) -> dict | None:
+        raise NotImplementedError
+
+    async def get_account_trades(self, market: str, symbol: str, limit: int = 50) -> list[dict]:
         raise NotImplementedError

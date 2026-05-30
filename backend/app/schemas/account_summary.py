@@ -22,6 +22,7 @@ class FuturesPositionItem(BaseSchema):
     entry_price: float
     mark_price: float | None = None
     unrealized_profit: float | None = None
+    margin: float | None = None
     leverage: int | None = None
     side: str | None = None
 
@@ -34,4 +35,3 @@ class AccountSummary(BaseSchema):
     futures_assets: list[FuturesAssetItem] | None = None
     futures_positions: list[FuturesPositionItem] | None = None
     error: str | None = None
-

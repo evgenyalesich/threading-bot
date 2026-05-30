@@ -81,3 +81,53 @@ async def stream_market(
         except Exception as exc:
             await websocket.send_json({"type": "error", "message": f"Stream error: {exc}"})
             return
+
+
+@router.websocket("/stream/trades")
+async def stream_trades(
+    websocket: WebSocket,
+    symbol: str,
+    market: str = "spot",
+    binance_symbol: str | None = None,
+    data_env: str = "real",
+) -> None:
+    await websocket.accept()
+    market = market.lower()
+    symbol = symbol.upper()
+    session_manager = get_session_manager()
+
+    session_factory = session_manager.session_factory()
+    async with session_factory() as session:
+        mapping_repo = SymbolMappingRepository(session)
+        resolver = SymbolResolverService(mapping_repo)
+        resolved = binance_symbol
+        if not resolved:
+            resolved = await resolver.resolve(symbol, market)
+        if not resolved:
+            resolved = symbol
+        binance_symbol = resolved
+
+        effective_settings = settings.model_copy(update={"binance_testnet": data_env.lower() == "testnet"})
+        stream_service = MarketStreamService(effective_settings)
+
+        try:
+            async for payload in stream_service.stream_trades(binance_symbol, market):
+                trade = stream_service.parse_trade(payload)
+                if trade is None:
+                    continue
+                await websocket.send_json(
+                    {
+                        "type": "trade",
+                        "symbol": symbol,
+                        "binance_symbol": binance_symbol,
+                        "data": {
+                            "price": trade["price"],
+                            "time": trade["time"].isoformat(),
+                        },
+                    }
+                )
+        except WebSocketDisconnect:
+            return
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "message": f"Trade stream error: {exc}"})
+            return

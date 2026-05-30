@@ -38,6 +38,7 @@ export default function ControlPanel({
   backfillMaxBars,
   autoFit,
   minConfidence,
+  strategy,
   minConfirmations,
   requirePattern,
   requireDivergence,
@@ -82,6 +83,7 @@ export default function ControlPanel({
   onBackfillMaxBarsChange,
   onAutoFitChange,
   onMinConfidenceChange,
+  onStrategyChange,
   onMinConfirmationsChange,
   onRequirePatternChange,
   onRequireDivergenceChange,
@@ -146,6 +148,14 @@ export default function ControlPanel({
         </div>
       </div>
       <div className="control-group">
+        <label>Стратегия</label>
+        <select value={strategy} onChange={(event) => onStrategyChange(event.target.value)}>
+          <option value="swing_60pip">Swing 60 pip</option>
+          <option value="ema200_fib_divergence">EMA200 + Fib + Div</option>
+          <option value="three_screens">Three Screens</option>
+        </select>
+      </div>
+      <div className="control-group">
         <label>Глубина (дней)</label>
         <input
           type="number"
@@ -187,7 +197,7 @@ export default function ControlPanel({
         <span>Авто-расчет по сумме</span>
       </label>
       <div className="control-group">
-        <label>Сумма ($)</label>
+        <label>{market === "futures" ? "Маржа на сделку ($)" : "Сумма сделки ($)"}</label>
         <input
           type="number"
           step="0.01"

@@ -42,11 +42,11 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
         self._trade_plan_service = trade_plan_service
         self._filters = filters or StrategyFilters()
 
-    def evaluate(self, data: pd.DataFrame) -> dict | None:
+    def evaluate(self, data: pd.DataFrame, context: dict | None = None) -> dict | None:
         payload, _debug = self._evaluate(data)
         return payload
 
-    def explain(self, data: pd.DataFrame) -> dict:
+    def explain(self, data: pd.DataFrame, context: dict | None = None) -> dict:
         _payload, debug = self._evaluate(data)
         return debug
 
@@ -230,4 +230,3 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
         }
 
         return payload, debug
-

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -82,6 +82,20 @@ class Settings(BaseSettings):
     db_auto_create: bool = Field(default=False, validation_alias="DB_AUTO_CREATE")
 
     model_config = SettingsConfigDict(env_file=str(ENV_PATH), case_sensitive=False)
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _parse_debug(cls, value):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return True
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on", "debug", "dev", "development"}:
+            return True
+        if text in {"0", "false", "no", "off", "release", "prod", "production"}:
+            return False
+        return True
 
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

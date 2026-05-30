@@ -22,6 +22,20 @@ function uniqueAscByTime(items) {
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
+function validValueSeries(items) {
+  return uniqueAscByTime(items).filter((item) => Number.isFinite(Number(item.value)));
+}
+
+function validCandleSeries(items) {
+  return uniqueAscByTime(items).filter(
+    (item) =>
+      Number.isFinite(Number(item.open)) &&
+      Number.isFinite(Number(item.high)) &&
+      Number.isFinite(Number(item.low)) &&
+      Number.isFinite(Number(item.close))
+  );
+}
+
 function resolvePrecision(candles, pricePrecision) {
   if (Number.isFinite(pricePrecision) && pricePrecision > 0) {
     return Math.min(Math.max(pricePrecision, 2), 10);
@@ -164,12 +178,28 @@ function calculateFibLevels(chartData, lookback = 120) {
   if (diff <= 0) return [];
 
   return [
-    { label: "0.236", value: high - diff * 0.236, color: "#facc15" },
-    { label: "0.382", value: high - diff * 0.382, color: "#f59e0b" },
-    { label: "0.5", value: high - diff * 0.5, color: "#e2e8f0" },
-    { label: "0.618", value: high - diff * 0.618, color: "#22c55e" },
-    { label: "0.786", value: high - diff * 0.786, color: "#ef4444" },
+    { label: "0.5", value: high - diff * 0.5, color: "#7dd3fc" },
+    { label: "0.618", value: high - diff * 0.618, color: "#38bdf8" },
+    { label: "0.786", value: high - diff * 0.786, color: "#0284c7" },
   ];
+}
+
+function formatCompact(value, digits = 1) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : "-";
+}
+
+function compactReason(signal) {
+  const trend = signal?.meta?.screen1?.h1_trend;
+  const stochK = signal?.meta?.screen2?.stoch_k;
+  const fibHint = signal?.meta?.trade_plan ? "Fib pullback" : null;
+  const parts = [];
+  if (trend === -1) parts.push("4H Bear");
+  if (trend === 1) parts.push("4H Bull");
+  if (Number(stochK) >= 70) parts.push("Stoch > 70");
+  if (Number(stochK) <= 30) parts.push("Stoch < 30");
+  if (fibHint) parts.push(fibHint);
+  return parts.slice(0, 3).join(" · ") || "Strategy setup";
 }
 
 function formatPatternLabel(name) {
@@ -192,11 +222,13 @@ function formatPatternLabel(name) {
 export default function ChartPanel({
   candles,
   signals,
+  openOrders = [],
   tradeHistory = [],
   pricePrecision,
   indicatorData,
   height = 520,
   onLoadMoreCandles,
+  signalTradePlan = null,
   showEma = true,
   showFib = true,
   showDivergence = true,
@@ -222,6 +254,7 @@ export default function ChartPanel({
   tradeMarkerMode = "signals",
   autoFit = false,
   fitRequest = 0,
+  liveTickSeq = 0,
   dataKey = "",
 }) {
   const chartRef = useRef(null);
@@ -283,7 +316,7 @@ export default function ChartPanel({
     return indicatorData.patterns.map((pattern) => ({
       time: pattern.time,
       position: pattern.signal > 0 ? "belowBar" : "aboveBar",
-      color: pattern.signal > 0 ? "#38bdf8" : "#f97316",
+      color: "#94a3b8",
       shape: "square",
       text: formatPatternLabel(pattern.name),
     }));
@@ -317,7 +350,7 @@ export default function ChartPanel({
     return indicatorData.elliott.map((pivot) => ({
       time: pivot.time,
       position: pivot.kind === "low" ? "belowBar" : "aboveBar",
-      color: pivot.kind === "low" ? "#facc15" : "#a855f7",
+      color: "#94a3b8",
       shape: pivot.kind === "low" ? "arrowUp" : "arrowDown",
       text: pivot.kind === "low" ? "Elliott Низ" : "Elliott Верх",
     }));
@@ -327,7 +360,7 @@ export default function ChartPanel({
     return visibleChartPatterns.map((pattern) => ({
       time: pattern.time,
       position: pattern.direction === "short" ? "aboveBar" : "belowBar",
-      color: pattern.direction === "short" ? "#fb7185" : "#38bdf8",
+      color: "#38bdf8",
       shape: "circle",
       text: pattern.name ? pattern.name.replace(/_/g, " ").slice(0, 12) : "PAT",
     }));
@@ -340,9 +373,7 @@ export default function ChartPanel({
         if (!Array.isArray(line.points) || line.points.length < 2) return;
         lines.push({
           points: line.points,
-          color:
-            line.color ||
-            (pattern.direction === "short" ? "rgba(248, 113, 113, 0.6)" : "rgba(56, 189, 248, 0.6)"),
+          color: "rgba(56, 189, 248, 0.62)",
           style: line.style ?? 2,
         });
       });
@@ -372,20 +403,14 @@ export default function ChartPanel({
       polygons.push({
         upper: upper.points,
         lower: lower.points,
-        color:
-          pattern.direction === "short"
-            ? "rgba(248, 113, 113, 0.18)"
-            : "rgba(34, 197, 94, 0.18)",
-        stroke:
-          pattern.direction === "short"
-            ? "rgba(248, 113, 113, 0.4)"
-            : "rgba(34, 197, 94, 0.4)",
+        color: "rgba(56, 189, 248, 0.12)",
+        stroke: "rgba(56, 189, 248, 0.4)",
       });
     });
     return polygons;
   }, [showPatternFill, visibleChartPatterns, patternFillLimit]);
   const tradePlanLevels = useMemo(() => {
-    const plan = signals[0]?.meta?.trade_plan;
+    const plan = signalTradePlan || signals[0]?.meta?.trade_plan;
     if (!plan) return [];
     const levels = [];
     if (Number.isFinite(plan.entry)) {
@@ -395,7 +420,7 @@ export default function ChartPanel({
       levels.push({ price: plan.stop_loss, label: "Stop", color: "#ef4444" });
     }
     if (Number.isFinite(plan.breakeven_at) && plan.breakeven_at !== plan.entry) {
-      levels.push({ price: plan.breakeven_at, label: "BE", color: "#facc15" });
+      levels.push({ price: plan.breakeven_at, label: "BE", color: "#94a3b8" });
     }
     if (Array.isArray(plan.take_levels)) {
       plan.take_levels.forEach((level, index) => {
@@ -406,7 +431,42 @@ export default function ChartPanel({
       levels.push({ price: plan.take_profit, label: "TP", color: "#22c55e" });
     }
     return levels;
-  }, [signals]);
+  }, [signalTradePlan, signals]);
+  const latestSignal = signals[0] || null;
+  const decisionSummary = useMemo(() => {
+    if (!latestSignal) return null;
+    const plan = latestSignal.meta?.trade_plan || signalTradePlan || {};
+    const screen1 = latestSignal.meta?.screen1 || {};
+    const screen2 = latestSignal.meta?.screen2 || {};
+    const risk = Math.abs(Number(plan.entry) - Number(plan.stop_loss));
+    const reward = Math.abs(Number(plan.take_profit) - Number(plan.entry));
+    const rr = Number.isFinite(Number(plan.reward_risk))
+      ? Number(plan.reward_risk)
+      : risk > 0 && Number.isFinite(reward)
+        ? reward / risk
+        : null;
+    return {
+      side: (latestSignal.signal_type || "").toUpperCase(),
+      confidence: Math.round(Number(latestSignal.confidence || 0) * 100),
+      trend: screen1.h1_trend === -1 ? "Bear" : screen1.h1_trend === 1 ? "Bull" : "-",
+      rsi: screen2.rsi,
+      stochK: screen2.stoch_k,
+      stochD: screen2.stoch_d,
+      rr,
+      reason: compactReason(latestSignal),
+    };
+  }, [latestSignal, signalTradePlan]);
+  const tradeZone = useMemo(() => {
+    const plan = signalTradePlan;
+    if (!plan) return null;
+    const entry = Number(plan.entry);
+    const stop = Number(plan.stop_loss);
+    const tp = Array.isArray(plan.take_levels) && plan.take_levels.length
+      ? Number(plan.take_levels[plan.take_levels.length - 1])
+      : Number(plan.take_profit);
+    if (!Number.isFinite(entry) || !Number.isFinite(stop) || !Number.isFinite(tp)) return null;
+    return { entry, stop, tp };
+  }, [signalTradePlan]);
   const tradeExitMarkers = useMemo(() => {
     if (!showTradeExits || !tradeHistory.length) return [];
     const markers = [];
@@ -488,6 +548,7 @@ export default function ChartPanel({
     });
 
     const candleSeries = chart.addCandlestickSeries({
+      priceScaleId: "right",
       upColor: "#22c55e",
       downColor: "#ef4444",
       borderUpColor: "#22c55e",
@@ -499,21 +560,25 @@ export default function ChartPanel({
     });
 
     const emaSeries = chart.addLineSeries({
+      priceScaleId: "right",
       color: "#4ade80",
       lineWidth: 2,
     });
 
     const bbUpper = chart.addLineSeries({
+      priceScaleId: "right",
       color: "rgba(59,130,246,0.6)",
       lineWidth: 1,
       lineStyle: 2,
     });
     const bbMiddle = chart.addLineSeries({
+      priceScaleId: "right",
       color: "rgba(148,163,184,0.6)",
       lineWidth: 1,
       lineStyle: 2,
     });
     const bbLower = chart.addLineSeries({
+      priceScaleId: "right",
       color: "rgba(59,130,246,0.6)",
       lineWidth: 1,
       lineStyle: 2,
@@ -526,7 +591,7 @@ export default function ChartPanel({
     });
     chart.priceScale("volume").applyOptions({
       scaleMargins: { top: 0.82, bottom: 0.02 },
-      visible: true,
+      visible: false,
       borderColor: "rgba(255,255,255,0.2)",
     });
 
@@ -537,7 +602,7 @@ export default function ChartPanel({
     });
     chart.priceScale("atr").applyOptions({
       scaleMargins: { top: 0.72, bottom: 0.12 },
-      visible: true,
+      visible: false,
       borderColor: "rgba(255,255,255,0.2)",
     });
 
@@ -550,7 +615,7 @@ export default function ChartPanel({
     });
     chart.priceScale("rsi").applyOptions({
       scaleMargins: { top: 0.62, bottom: 0.22 },
-      visible: true,
+      visible: false,
       borderColor: "rgba(255,255,255,0.2)",
     });
     rsiSeries.applyOptions({
@@ -570,39 +635,40 @@ export default function ChartPanel({
     chartRef.current = chart;
 
     return () => {
+      patternLineRefs.current = [];
       chart.remove();
     };
   }, []);
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    seriesRef.current.setData(uniqueAscByTime(chartData));
+    seriesRef.current.setData(validCandleSeries(chartData));
     if (emaRef.current) {
-      emaRef.current.setData(uniqueAscByTime(emaData));
+      emaRef.current.setData(validValueSeries(emaData));
       emaRef.current.applyOptions({ visible: showEma });
     }
     if (bbUpperRef.current) {
-      bbUpperRef.current.setData(uniqueAscByTime(bbands?.upper ?? []));
+      bbUpperRef.current.setData(validValueSeries(bbands?.upper ?? []));
       bbUpperRef.current.applyOptions({ visible: showBBands });
     }
     if (bbMiddleRef.current) {
-      bbMiddleRef.current.setData(uniqueAscByTime(bbands?.middle ?? []));
+      bbMiddleRef.current.setData(validValueSeries(bbands?.middle ?? []));
       bbMiddleRef.current.applyOptions({ visible: showBBands });
     }
     if (bbLowerRef.current) {
-      bbLowerRef.current.setData(uniqueAscByTime(bbands?.lower ?? []));
+      bbLowerRef.current.setData(validValueSeries(bbands?.lower ?? []));
       bbLowerRef.current.applyOptions({ visible: showBBands });
     }
     if (volumeRef.current) {
-      volumeRef.current.setData(uniqueAscByTime(volumeData));
+      volumeRef.current.setData(validValueSeries(volumeData));
       volumeRef.current.applyOptions({ visible: showVolume });
     }
     if (atrRef.current) {
-      atrRef.current.setData(uniqueAscByTime(atrData));
+      atrRef.current.setData(validValueSeries(atrData));
       atrRef.current.applyOptions({ visible: showAtr });
     }
     if (rsiRef.current) {
-      rsiRef.current.setData(uniqueAscByTime(rsiData));
+      rsiRef.current.setData(validValueSeries(rsiData));
       rsiRef.current.applyOptions({ visible: showRsi });
     }
   }, [
@@ -657,9 +723,9 @@ export default function ChartPanel({
 
   useEffect(() => {
     if (!chartRef.current) return;
-    chartRef.current.priceScale("volume").applyOptions({ visible: showVolume });
-    chartRef.current.priceScale("atr").applyOptions({ visible: showAtr });
-    chartRef.current.priceScale("rsi").applyOptions({ visible: showRsi });
+    chartRef.current.priceScale("volume").applyOptions({ visible: false });
+    chartRef.current.priceScale("atr").applyOptions({ visible: false });
+    chartRef.current.priceScale("rsi").applyOptions({ visible: false });
   }, [showVolume, showAtr, showRsi]);
 
   useEffect(() => {
@@ -705,18 +771,40 @@ export default function ChartPanel({
         });
       });
     }
-    signals.forEach((item) => {
+    const activeOrders = openOrders.filter(
+      (order) => !["closed", "cancelled", "filled"].includes((order.status || "").toLowerCase())
+    );
+    const latestActiveOrder = [...activeOrders].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )[0];
+    const latestSignalMarker = [...signals].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )[0];
+    if (!latestActiveOrder && latestSignalMarker) {
+      const item = latestSignalMarker;
       markers.push({
         time: Math.floor(new Date(item.created_at).getTime() / 1000),
         position: item.signal_type === "long" ? "belowBar" : "aboveBar",
         color: item.signal_type === "long" ? "#22c55e" : "#ef4444",
         shape: item.signal_type === "long" ? "arrowUp" : "arrowDown",
-        text: item.signal_type.toUpperCase(),
+        text: `${item.signal_type.toUpperCase()} · ${Math.round(Number(item.confidence || 0) * 100)}%`,
       });
-    });
+    }
+    if (latestActiveOrder?.price) {
+      const orderTime = Math.floor(new Date(latestActiveOrder.created_at).getTime() / 1000);
+      const side = (latestActiveOrder.side || "").toUpperCase() === "BUY" ? "LONG" : "SHORT";
+      markers.push({
+        time: orderTime,
+        position: side === "LONG" ? "belowBar" : "aboveBar",
+        color: side === "LONG" ? "#22c55e" : "#ef4444",
+        shape: side === "LONG" ? "arrowUp" : "arrowDown",
+        text: `OPEN ${side}`,
+      });
+    }
     seriesRef.current.setMarkers(uniqueAscByTime(markers));
   }, [
     signals,
+    openOrders,
     divergenceMarkers,
     limitedPatternMarkers,
     elliottMarkers,
@@ -790,7 +878,14 @@ export default function ChartPanel({
 
   useEffect(() => {
     if (!chartRef.current) return;
-    patternLineRefs.current.forEach((series) => chartRef.current.removeSeries(series));
+    patternLineRefs.current.forEach((series) => {
+      if (!series || !chartRef.current) return;
+      try {
+        chartRef.current.removeSeries(series);
+      } catch {
+        // ignore stale series during fast remounts
+      }
+    });
     if (!showChartPatterns) {
       patternLineRefs.current = [];
       return;
@@ -932,6 +1027,46 @@ export default function ChartPanel({
           ctx.setLineDash([]);
         });
       }
+
+      if (tradeZone && chartData.length) {
+        const lastTime = chartData[chartData.length - 1]?.time;
+        const firstTime = chartData[Math.max(0, chartData.length - 40)]?.time;
+        const x1 = timeScale.timeToCoordinate(firstTime);
+        const x2 = timeScale.timeToCoordinate(lastTime);
+        const yEntry = priceToCoordinate(tradeZone.entry);
+        const yStop = priceToCoordinate(tradeZone.stop);
+        const yTp = priceToCoordinate(tradeZone.tp);
+        if (
+          x1 !== null && x2 !== null &&
+          yEntry !== null && yStop !== null && yTp !== null &&
+          Number.isFinite(x1) && Number.isFinite(x2)
+        ) {
+          const left = Math.min(x1, x2);
+          const right = Math.max(x1, x2);
+          const riskTop = Math.min(yEntry, yStop);
+          const riskBottom = Math.max(yEntry, yStop);
+          const profTop = Math.min(yEntry, yTp);
+          const profBottom = Math.max(yEntry, yTp);
+
+          ctx.fillStyle = "rgba(239,68,68,0.18)";
+          ctx.fillRect(left, riskTop, right - left, riskBottom - riskTop);
+          ctx.fillStyle = "rgba(34,197,94,0.18)";
+          ctx.fillRect(left, profTop, right - left, profBottom - profTop);
+
+          ctx.strokeStyle = "rgba(56,189,248,0.9)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(left, yEntry);
+          ctx.lineTo(right, yEntry);
+          ctx.stroke();
+
+          ctx.fillStyle = "#cbd5e1";
+          ctx.font = "12px sans-serif";
+          ctx.fillText("Entry", right + 6, yEntry + 4);
+          ctx.fillText("SL", right + 6, yStop + 4);
+          ctx.fillText("TP", right + 6, yTp + 4);
+        }
+      }
     };
 
     const scheduleDraw = () => {
@@ -973,7 +1108,7 @@ export default function ChartPanel({
         container.removeEventListener("pointerup", scheduleDraw);
       }
     };
-  }, [patternPolygons, showPatternFill, patternFillBands, showTradePaths, tradeHistory]);
+  }, [patternPolygons, showPatternFill, patternFillBands, showTradePaths, tradeHistory, tradeZone, chartData]);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -1037,6 +1172,21 @@ export default function ChartPanel({
 
   return (
     <div className="chart-panel" ref={containerRef} style={{ height }}>
+      {decisionSummary ? (
+        <div className={`chart-decision-card ${decisionSummary.side.toLowerCase()}`}>
+          <div className="chart-decision-head">
+            <strong>{decisionSummary.side}</strong>
+            <span>Conf {decisionSummary.confidence}%</span>
+          </div>
+          <div className="chart-decision-grid">
+            <span>4H Trend <b>{decisionSummary.trend}</b></span>
+            <span>RR <b>1:{formatCompact(decisionSummary.rr, 1)}</b></span>
+            <span>1H RSI <b>{formatCompact(decisionSummary.rsi, 1)}</b></span>
+            <span>Stoch <b>{formatCompact(decisionSummary.stochK, 0)}/{formatCompact(decisionSummary.stochD, 0)}</b></span>
+          </div>
+          <div className="chart-decision-reason">{decisionSummary.reason}</div>
+        </div>
+      ) : null}
       <canvas className="chart-overlay" ref={overlayRef} />
     </div>
   );
