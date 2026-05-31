@@ -4,7 +4,13 @@ import pandas as pd
 
 
 class DivergenceService:
-    def detect(self, data: pd.DataFrame, oscillator: pd.Series, window: int = 5) -> dict[str, bool]:
+    def detect(
+        self,
+        data: pd.DataFrame,
+        oscillator: pd.Series,
+        window: int = 5,
+        min_right_window: int = 1,
+    ) -> dict[str, bool]:
         highs = data["high"].to_numpy()
         lows = data["low"].to_numpy()
         osc = oscillator.to_numpy()
@@ -14,11 +20,16 @@ class DivergenceService:
         osc_highs: list[tuple[int, float]] = []
         osc_lows: list[tuple[int, float]] = []
 
-        for idx in range(window, len(data) - window):
-            if highs[idx] == highs[idx - window : idx + window + 1].max():
+        for idx in range(window, len(data)):
+            right_window = min(window, len(data) - idx - 1)
+            if right_window < min_right_window:
+                continue
+            left = idx - window
+            right = idx + right_window + 1
+            if highs[idx] == highs[left:right].max():
                 price_highs.append((idx, highs[idx]))
                 osc_highs.append((idx, osc[idx]))
-            if lows[idx] == lows[idx - window : idx + window + 1].min():
+            if lows[idx] == lows[left:right].min():
                 price_lows.append((idx, lows[idx]))
                 osc_lows.append((idx, osc[idx]))
 

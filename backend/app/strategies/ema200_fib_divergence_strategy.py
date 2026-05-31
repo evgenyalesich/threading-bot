@@ -17,6 +17,9 @@ from app.strategies.strategy_filters import StrategyFilters
 
 class Ema200FibDivergenceStrategy(BaseStrategy):
     name = "ema200_fib_divergence"
+    _KEY_FIB_LEVELS = {"0.5", "0.618", "0.786"}
+    _CONFLUENCE_TOLERANCE = 0.004
+    _ALLOWED_TIMEFRAMES = {"1h", "4h"}
 
     def __init__(
         self,
@@ -43,20 +46,25 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
         self._filters = filters or StrategyFilters()
 
     def evaluate(self, data: pd.DataFrame, context: dict | None = None) -> dict | None:
-        payload, _debug = self._evaluate(data)
+        payload, _debug = self._evaluate(data, context)
         return payload
 
     def explain(self, data: pd.DataFrame, context: dict | None = None) -> dict:
-        _payload, debug = self._evaluate(data)
+        _payload, debug = self._evaluate(data, context)
         return debug
 
-    def _evaluate(self, data: pd.DataFrame) -> tuple[dict | None, dict]:
+    def _evaluate(self, data: pd.DataFrame, context: dict | None = None) -> tuple[dict | None, dict]:
         debug: dict = {"reasons": []}
+        timeframe = (context or {}).get("timeframe")
+        debug["timeframe"] = timeframe
         debug["bars"] = len(data)
         debug["min_bars"] = 210
 
         if len(data) < 210:
             debug["reasons"].append("insufficient_bars")
+            return None, debug
+        if timeframe and timeframe not in self._ALLOWED_TIMEFRAMES:
+            debug["reasons"].append("timeframe_not_allowed_for_position_profile")
             return None, debug
 
         close = data["close"].astype(float)
@@ -143,6 +151,27 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
             debug["reasons"].append("confirmations_below_min")
             return None, debug
 
+        key_fib_levels = {
+            key: float(value)
+            for key, value in fib_levels.items()
+            if key in self._KEY_FIB_LEVELS
+        }
+        confluence_levels = list(key_fib_levels.values()) + [float(ema200.iloc[-1])]
+        nearest_confluence = min(
+            (abs(last_close - level) / max(last_close, 1e-9) for level in confluence_levels),
+            default=1.0,
+        )
+        debug.update(
+            {
+                "key_fib_levels": key_fib_levels,
+                "nearest_confluence_distance": nearest_confluence,
+                "confluence_tolerance": self._CONFLUENCE_TOLERANCE,
+            }
+        )
+        if nearest_confluence > self._CONFLUENCE_TOLERANCE:
+            debug["reasons"].append("no_fib_ema_confluence")
+            return None, debug
+
         volume = data["volume"].astype(float)
         volume_confirm = bool(volume.iloc[-1] > volume.rolling(window=20).mean().iloc[-1] * 1.2)
         pattern_conf = float(chart_pattern.get("confidence", 0)) if chart_pattern else 0.0
@@ -192,7 +221,10 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
             stop_hint=chart_pattern.get("stop_level") if chart_pattern else None,
         )
 
-        risk_levels = self._risk_service.levels(last_close, side, reward_risk=3.0)
+        risk_levels = {
+            "stop_loss": trade_plan.stop_loss,
+            "take_profit": trade_plan.take_profit,
+        }
 
         rationale = (
             f"trend={trend_bias}, candles={candle_bias}, pattern={pattern_bias}, "
@@ -223,6 +255,11 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
                     "breakeven_at": trade_plan.breakeven_at,
                     "reward_risk": trade_plan.reward_risk,
                     "stop_type": trade_plan.stop_type,
+                    "min_hold_seconds": 3600 if timeframe == "1h" else 14400 if timeframe == "4h" else 0,
+                },
+                "position_profile": {
+                    "style": "position",
+                    "allowed_timeframes": sorted(self._ALLOWED_TIMEFRAMES),
                 },
                 "risk_levels": risk_levels,
                 "probability": probability,

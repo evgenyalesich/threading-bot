@@ -45,6 +45,7 @@ export default function ScanResultsPanel({
   requireCandle,
   requireVolumeConfirm,
   autoSync,
+  onlyNewSignalsMinutes,
   onLimitChange,
   onMaxPairsChange,
   onMinVolatilityChange,
@@ -55,6 +56,7 @@ export default function ScanResultsPanel({
   onRequireCandleChange,
   onRequireVolumeConfirmChange,
   onAutoSyncChange,
+  onOnlyNewSignalsMinutesChange,
   onRunScan,
   onSelectResult,
 }) {
@@ -100,6 +102,15 @@ export default function ScanResultsPanel({
           />
           <span>Авто-синхронизация истории</span>
         </label>
+        <div className="control-group">
+          <label>Только новые (мин)</label>
+          <input
+            type="number"
+            min="0"
+            value={onlyNewSignalsMinutes}
+            onChange={(event) => onOnlyNewSignalsMinutesChange(Number(event.target.value) || 0)}
+          />
+        </div>
       </div>
 
       <button className="primary scan-btn" onClick={onRunScan} disabled={running}>

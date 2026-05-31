@@ -1,5 +1,5 @@
 import { createChart } from "lightweight-charts";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function toChartData(candles) {
   return candles.map((candle) => ({
@@ -256,6 +256,10 @@ export default function ChartPanel({
   fitRequest = 0,
   liveTickSeq = 0,
   dataKey = "",
+  activeOrder = null,
+  onMoveStopToPrice = null,
+  onMoveTakeToPrice = null,
+  onRequestStopDragConfirm = null,
 }) {
   const chartRef = useRef(null);
   const containerRef = useRef(null);
@@ -274,6 +278,11 @@ export default function ChartPanel({
   const lastDataKeyRef = useRef("");
   const overlayRef = useRef(null);
   const loadMoreLockRef = useRef(false);
+  const prevAutoFitRef = useRef(false);
+  const dragStateRef = useRef({ active: false });
+  const dragStopPriceRef = useRef(null);
+  const [dragStopPrice, setDragStopPrice] = useState(null);
+  const [isDraggingStop, setIsDraggingStop] = useState(false);
 
   const chartData = useMemo(() => uniqueAscByTime(toChartData(candles)), [candles]);
   const precision = useMemo(
@@ -417,7 +426,7 @@ export default function ChartPanel({
       levels.push({ price: plan.entry, label: "Entry", color: "#38bdf8" });
     }
     if (Number.isFinite(plan.stop_loss)) {
-      levels.push({ price: plan.stop_loss, label: "Stop", color: "#ef4444" });
+      levels.push({ price: dragStopPrice ?? plan.stop_loss, label: "Stop", color: "#ef4444" });
     }
     if (Number.isFinite(plan.breakeven_at) && plan.breakeven_at !== plan.entry) {
       levels.push({ price: plan.breakeven_at, label: "BE", color: "#94a3b8" });
@@ -431,7 +440,7 @@ export default function ChartPanel({
       levels.push({ price: plan.take_profit, label: "TP", color: "#22c55e" });
     }
     return levels;
-  }, [signalTradePlan, signals]);
+  }, [signalTradePlan, signals, dragStopPrice]);
   const latestSignal = signals[0] || null;
   const decisionSummary = useMemo(() => {
     if (!latestSignal) return null;
@@ -1120,10 +1129,12 @@ export default function ChartPanel({
 
   useEffect(() => {
     if (!chartRef.current) return;
-    if (autoFit && chartData.length) {
+    const turnedOn = autoFit && !prevAutoFitRef.current;
+    if (turnedOn && chartData.length) {
       chartRef.current.timeScale().fitContent();
     }
-  }, [autoFit, chartData]);
+    prevAutoFitRef.current = autoFit;
+  }, [autoFit, chartData.length]);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -1170,6 +1181,87 @@ export default function ChartPanel({
     };
   }, [candles, onLoadMoreCandles]);
 
+  useEffect(() => {
+    if (!containerRef.current || !seriesRef.current) return;
+    if (!activeOrder || typeof onMoveStopToPrice !== "function") return;
+    const currentStop = Number(activeOrder.stop_loss);
+    const currentTake = Number(activeOrder.take_profit);
+    if (!Number.isFinite(currentStop) || currentStop <= 0) return;
+
+    const container = containerRef.current;
+    const minHitDistancePx = 24;
+
+    const getStopY = () => seriesRef.current?.priceToCoordinate?.(currentStop);
+    const getTakeY = () => seriesRef.current?.priceToCoordinate?.(currentTake);
+    const toPrice = (y) => seriesRef.current?.coordinateToPrice?.(y);
+
+    const onPointerDown = (event) => {
+      const rect = container.getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const stopY = getStopY();
+      const takeY = getTakeY();
+      const stopHit = Number.isFinite(stopY) && Math.abs(y - stopY) <= minHitDistancePx;
+      const takeHit = Number.isFinite(takeY) && Math.abs(y - takeY) <= minHitDistancePx;
+      if (!stopHit && !takeHit) return;
+      dragStateRef.current.active = true;
+      dragStateRef.current.orderId = activeOrder.id;
+      dragStateRef.current.kind = takeHit && !stopHit ? "take" : "stop";
+      setIsDraggingStop(true);
+      container.style.cursor = "ns-resize";
+      event.preventDefault();
+    };
+
+    const onPointerMove = (event) => {
+      if (!dragStateRef.current.active) return;
+      const rect = container.getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const price = Number(toPrice(y));
+      if (!Number.isFinite(price) || price <= 0) return;
+      dragStopPriceRef.current = price;
+      setDragStopPrice(price);
+      event.preventDefault();
+    };
+
+    const finishDrag = async () => {
+      if (!dragStateRef.current.active) return;
+      dragStateRef.current.active = false;
+      setIsDraggingStop(false);
+      container.style.cursor = "";
+      const nextStop = Number(dragStopPriceRef.current);
+      dragStopPriceRef.current = null;
+      setDragStopPrice(null);
+      if (!Number.isFinite(nextStop) || nextStop <= 0) return;
+      if (dragStateRef.current.orderId !== activeOrder.id) return;
+      if (dragStateRef.current.kind === "take") {
+        if (typeof onMoveTakeToPrice === "function") {
+          await onMoveTakeToPrice(activeOrder, nextStop);
+        }
+        return;
+      }
+      if (typeof onRequestStopDragConfirm === "function") {
+        onRequestStopDragConfirm(activeOrder, nextStop);
+        return;
+      }
+      await onMoveStopToPrice(activeOrder, nextStop);
+    };
+
+    container.addEventListener("pointerdown", onPointerDown);
+    container.addEventListener("pointermove", onPointerMove);
+    container.addEventListener("pointerup", finishDrag);
+    container.addEventListener("pointerleave", finishDrag);
+
+    return () => {
+      container.style.cursor = "";
+      container.removeEventListener("pointerdown", onPointerDown);
+      container.removeEventListener("pointermove", onPointerMove);
+      container.removeEventListener("pointerup", finishDrag);
+      container.removeEventListener("pointerleave", finishDrag);
+      dragStateRef.current.active = false;
+      setIsDraggingStop(false);
+      setDragStopPrice(null);
+    };
+  }, [activeOrder, onMoveStopToPrice, onMoveTakeToPrice, onRequestStopDragConfirm]);
+
   return (
     <div className="chart-panel" ref={containerRef} style={{ height }}>
       {decisionSummary ? (
@@ -1185,6 +1277,27 @@ export default function ChartPanel({
             <span>Stoch <b>{formatCompact(decisionSummary.stochK, 0)}/{formatCompact(decisionSummary.stochD, 0)}</b></span>
           </div>
           <div className="chart-decision-reason">{decisionSummary.reason}</div>
+        </div>
+      ) : null}
+      {isDraggingStop ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 14,
+            right: 14,
+            zIndex: 7,
+            padding: "6px 10px",
+            borderRadius: 8,
+            background: "rgba(239,68,68,.18)",
+            border: "1px solid rgba(239,68,68,.45)",
+            color: "#fecaca",
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: ".3px",
+          }}
+        >
+          {dragStateRef.current.kind === "take" ? "TP" : "SL"} DRAG ACTIVE{" "}
+          {Number.isFinite(dragStopPrice) ? `· ${Number(dragStopPrice).toFixed(6)}` : ""}
         </div>
       ) : null}
       <canvas className="chart-overlay" ref={overlayRef} />

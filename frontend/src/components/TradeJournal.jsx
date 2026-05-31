@@ -56,7 +56,15 @@ function resolveExecutionBadge(order) {
   return { text: order.status || "unknown", className: "neutral" };
 }
 
-export default function TradeJournal({ orders, priceMap, futuresPositionMap, onSelectOrder, onCloseOrder }) {
+export default function TradeJournal({
+  orders,
+  priceMap,
+  futuresPositionMap,
+  onSelectOrder,
+  onCloseOrder,
+  onMoveStopToBreakeven,
+  onMoveStopToPrice,
+}) {
   const [tab, setTab] = useState("orders");
   const executionItems = useMemo(
     () =>
@@ -156,9 +164,27 @@ export default function TradeJournal({ orders, priceMap, futuresPositionMap, onS
               </div>
             </button>
             {tab === "orders" && !isClosed ? (
-              <button type="button" className="journal-close-btn" onClick={() => onCloseOrder?.(order)}>
-                Закрыть
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="journal-close-btn" onClick={() => onMoveStopToBreakeven?.(order)}>
+                  SL to BE
+                </button>
+                <button
+                  type="button"
+                  className="journal-close-btn"
+                  onClick={() => {
+                    const raw = window.prompt("Новый SL (цена)", order.stop_loss ?? order.price ?? "");
+                    if (raw === null) return;
+                    const value = Number(raw);
+                    if (!Number.isFinite(value) || value <= 0) return;
+                    onMoveStopToPrice?.(order, value);
+                  }}
+                >
+                  SL цена
+                </button>
+                <button type="button" className="journal-close-btn" onClick={() => onCloseOrder?.(order)}>
+                  Закрыть
+                </button>
+              </div>
             ) : null}
             </div>
           );

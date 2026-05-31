@@ -192,6 +192,13 @@ export async function moveStopToPrice(orderId, price) {
   });
 }
 
+export async function moveTakeToPrice(orderId, price) {
+  return request(`/orders/${orderId}/take`, {
+    method: "POST",
+    body: JSON.stringify({ price }),
+  });
+}
+
 export async function closeOrderPosition(orderId) {
   return request(`/orders/${orderId}/close`, {
     method: "POST",

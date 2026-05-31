@@ -110,14 +110,19 @@ class BacktestService:
                     context = {
                         "trend_data": trend_df_slice,
                         "h1_data": trend_df_slice,  # legacy compat
+                        "timeframe": timeframe,
                     }
+            elif context is None:
+                context = {"timeframe": timeframe}
             payload = self._strategy.evaluate(window, context)
             if not payload:
                 continue
             trade = self._simulate_trade(
                 payload,
-                candles,
+                data=data,
+                candles=candles,
                 start_index=idx + 1,
+                window_bars=window_bars,
                 symbol=symbol,
                 timeframe=timeframe,
                 trade_id=trade_id,
@@ -145,8 +150,10 @@ class BacktestService:
     def _simulate_trade(
         self,
         payload: dict,
+        data: pd.DataFrame,
         candles: Iterable,
         start_index: int,
+        window_bars: int,
         symbol: str,
         timeframe: str,
         trade_id: int,
@@ -185,14 +192,18 @@ class BacktestService:
         exit_price = candles[-1].close
         exit_time = int(candles[-1].open_time.timestamp())
         exit_reason = "OPEN"
+        min_hold_seconds = int(plan.get("min_hold_seconds") or 0)
 
-        for candle in candles[start_index:]:
+        for candle_index in range(start_index, len(candles)):
+            candle = candles[candle_index]
             high = float(candle.high)
             low = float(candle.low)
+            elapsed_seconds = int(candle.open_time.timestamp()) - entry_time
+            hold_locked = elapsed_seconds < min_hold_seconds
             stop_hit = current_stop is not None and (low <= current_stop if side > 0 else high >= current_stop)
 
             # Handle ambiguous intra-candle hit order (both TP and SL touched).
-            if take_levels:
+            if take_levels and not hold_locked:
                 final_tp_hit = False
                 for index, level in enumerate(take_levels):
                     if any(hit["level"] == index + 1 for hit in tp_hits):
@@ -234,6 +245,21 @@ class BacktestService:
                     exit_reason = "BE" if moved_to_be and abs(current_stop - entry) < entry * 0.0001 else "SL"
                     if remaining > 0:
                         trade_r = ((stop_fill - entry) / entry) * 100 * side
+                        realized_pnl += trade_r * remaining
+                        remaining = 0.0
+                    break
+
+            window_start = max(0, candle_index - window_bars + 1)
+            window = data.iloc[window_start : candle_index + 1]
+            opposite_payload = self._strategy.evaluate(window, {"timeframe": timeframe})
+            if opposite_payload:
+                opposite_side = 1 if opposite_payload.get("signal_type") == "long" else -1
+                if opposite_side == -side and not hold_locked:
+                    exit_price = self._apply_fill(float(candle.close), side=side, is_exit=True, slippage_bps=slippage_bps)
+                    exit_time = int(candle.open_time.timestamp())
+                    exit_reason = "OPPOSITE_SIGNAL"
+                    if remaining > 0:
+                        trade_r = ((exit_price - entry) / entry) * 100 * side
                         realized_pnl += trade_r * remaining
                         remaining = 0.0
                     break

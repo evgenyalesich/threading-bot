@@ -311,38 +311,47 @@ async def move_to_breakeven(
 
     exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
     if exchange:
-        if order.market == "spot":
-            if order.oco_order_id:
-                await exchange.cancel_oco_order(order.symbol, order.oco_order_id)
-            elif order.stop_order_id:
-                await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
-            if order.take_profit:
-                oco = await exchange.place_oco_order(
+        try:
+            if order.market == "spot":
+                if order.oco_order_id:
+                    await exchange.cancel_oco_order(order.symbol, order.oco_order_id)
+                elif order.stop_order_id:
+                    await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
+                if order.take_profit:
+                    oco = await exchange.place_oco_order(
+                        symbol=order.symbol,
+                        side=exit_side,
+                        quantity=order.quantity,
+                        take_profit=order.take_profit,
+                        stop_loss=entry_price,
+                    )
+                    order.oco_order_id = str(oco.get("orderListId") or "")
+                    order_reports = oco.get("orderReports") or []
+                    for report in order_reports:
+                        order_type = report.get("type")
+                        if order_type in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
+                            order.stop_order_id = str(report.get("orderId") or "")
+                        if order_type in {"LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
+                            order.take_order_id = str(report.get("orderId") or "")
+            else:
+                if order.stop_order_id:
+                    try:
+                        await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
+                    except Exception as exc:
+                        # Binance can return -2011 when stop was already canceled/filled.
+                        if "-2011" not in str(exc):
+                            raise
+                stop_order = await exchange.place_stop_order(
                     symbol=order.symbol,
                     side=exit_side,
                     quantity=order.quantity,
-                    take_profit=order.take_profit,
-                    stop_loss=entry_price,
+                    stop_price=entry_price,
+                    reduce_only=True,
+                    close_position=False,
                 )
-                order.oco_order_id = str(oco.get("orderListId") or "")
-                order_reports = oco.get("orderReports") or []
-                for report in order_reports:
-                    order_type = report.get("type")
-                    if order_type in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
-                        order.stop_order_id = str(report.get("orderId") or "")
-                    if order_type in {"LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
-                        order.take_order_id = str(report.get("orderId") or "")
-        else:
-            if order.stop_order_id:
-                await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
-            stop_order = await exchange.place_stop_order(
-                symbol=order.symbol,
-                side=exit_side,
-                quantity=order.quantity,
-                stop_price=entry_price,
-                reduce_only=True,
-            )
-            order.stop_order_id = str(stop_order.get("orderId") or "")
+                order.stop_order_id = str(stop_order.get("orderId") or "")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"breakeven_failed: {str(exc)[:300]}")
 
     updated = await order_repo.update(
         order,
@@ -385,44 +394,133 @@ async def move_stop(
 
     exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
     if exchange:
-        if order.market == "spot":
-            if order.oco_order_id:
-                await exchange.cancel_oco_order(order.symbol, order.oco_order_id)
-            elif order.stop_order_id:
-                await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
-            if order.take_profit:
-                oco = await exchange.place_oco_order(
+        try:
+            if order.market == "spot":
+                if order.oco_order_id:
+                    await exchange.cancel_oco_order(order.symbol, order.oco_order_id)
+                elif order.stop_order_id:
+                    await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
+                if order.take_profit:
+                    oco = await exchange.place_oco_order(
+                        symbol=order.symbol,
+                        side=exit_side,
+                        quantity=order.quantity,
+                        take_profit=order.take_profit,
+                        stop_loss=stop_price,
+                    )
+                    order.oco_order_id = str(oco.get("orderListId") or "")
+                    order_reports = oco.get("orderReports") or []
+                    for report in order_reports:
+                        order_type = report.get("type")
+                        if order_type in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
+                            order.stop_order_id = str(report.get("orderId") or "")
+                        if order_type in {"LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
+                            order.take_order_id = str(report.get("orderId") or "")
+            else:
+                if order.stop_order_id:
+                    try:
+                        await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
+                    except Exception as exc:
+                        # Binance can return -2011 when stop was already canceled/filled.
+                        if "-2011" not in str(exc):
+                            raise
+                stop_order = await exchange.place_stop_order(
                     symbol=order.symbol,
                     side=exit_side,
                     quantity=order.quantity,
-                    take_profit=order.take_profit,
-                    stop_loss=stop_price,
+                    stop_price=stop_price,
+                    reduce_only=True,
+                    close_position=False,
                 )
-                order.oco_order_id = str(oco.get("orderListId") or "")
-                order_reports = oco.get("orderReports") or []
-                for report in order_reports:
-                    order_type = report.get("type")
-                    if order_type in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
-                        order.stop_order_id = str(report.get("orderId") or "")
-                    if order_type in {"LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
-                        order.take_order_id = str(report.get("orderId") or "")
-        else:
-            if order.stop_order_id:
-                await exchange.cancel_order(order.market, order.symbol, order.stop_order_id)
-            stop_order = await exchange.place_stop_order(
-                symbol=order.symbol,
-                side=exit_side,
-                quantity=order.quantity,
-                stop_price=stop_price,
-                reduce_only=True,
-            )
-            order.stop_order_id = str(stop_order.get("orderId") or "")
+                order.stop_order_id = str(stop_order.get("orderId") or "")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"move_stop_failed: {str(exc)[:300]}")
 
     updated = await order_repo.update(
         order,
         {
             "stop_loss": stop_price,
             "breakeven_moved": True,
+        },
+    )
+    return OrderRead.model_validate(updated)
+
+
+@router.post("/{order_id}/take")
+async def move_take(
+    order_id: int,
+    payload: OrderStopUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> OrderRead:
+    order_repo = OrderRepository(session)
+    order = await order_repo.get(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    take_price = payload.price
+    if not take_price or take_price <= 0:
+        raise HTTPException(status_code=400, detail="take_price_required")
+
+    trade_env = (order.trade_env or "testnet").lower()
+    api_key, api_secret, trade_settings = resolve_api_credentials(settings, trade_env, order.market)
+    exchange = None
+    if api_key and api_secret:
+        exchange = BinanceExchange(trade_settings)
+
+    sizing_service = OrderSizingService(BinanceMarketService(trade_settings))
+    symbol_normalized = order.symbol.replace("-", "").upper()
+    norm = await sizing_service.normalize_order(symbol_normalized, order.market, None, take_price)
+    if norm.error:
+        raise HTTPException(status_code=400, detail=norm.error)
+    take_price = norm.price if norm.price is not None else take_price
+
+    exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
+    if exchange:
+        try:
+            if order.market == "spot":
+                if order.oco_order_id:
+                    await exchange.cancel_oco_order(order.symbol, order.oco_order_id)
+                elif order.take_order_id:
+                    await exchange.cancel_order(order.market, order.symbol, order.take_order_id)
+                if order.stop_loss:
+                    oco = await exchange.place_oco_order(
+                        symbol=order.symbol,
+                        side=exit_side,
+                        quantity=order.quantity,
+                        take_profit=take_price,
+                        stop_loss=order.stop_loss,
+                    )
+                    order.oco_order_id = str(oco.get("orderListId") or "")
+                    order_reports = oco.get("orderReports") or []
+                    for report in order_reports:
+                        order_type = report.get("type")
+                        if order_type in {"STOP_LOSS_LIMIT", "STOP_LOSS"}:
+                            order.stop_order_id = str(report.get("orderId") or "")
+                        if order_type in {"LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}:
+                            order.take_order_id = str(report.get("orderId") or "")
+            else:
+                if order.take_order_id:
+                    try:
+                        await exchange.cancel_order(order.market, order.symbol, order.take_order_id)
+                    except Exception as exc:
+                        if "-2011" not in str(exc):
+                            raise
+                take_order = await exchange.place_take_profit_order(
+                    symbol=order.symbol,
+                    side=exit_side,
+                    quantity=order.quantity,
+                    take_profit=take_price,
+                    reduce_only=True,
+                    close_position=False,
+                )
+                order.take_order_id = str(take_order.get("orderId") or "")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"move_take_failed: {str(exc)[:300]}")
+
+    updated = await order_repo.update(
+        order,
+        {
+            "take_profit": take_price,
         },
     )
     return OrderRead.model_validate(updated)

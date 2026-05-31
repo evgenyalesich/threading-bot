@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.signal import Signal
 from app.repositories.base_repository import BaseRepository
+from datetime import datetime
 
 
 class SignalRepository(BaseRepository[Signal]):
@@ -31,3 +32,23 @@ class SignalRepository(BaseRepository[Signal]):
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def has_recent(
+        self,
+        symbol: str,
+        timeframe: str,
+        signal_type: str,
+        since: datetime,
+    ) -> bool:
+        stmt = (
+            select(Signal.id)
+            .where(
+                Signal.symbol == symbol,
+                Signal.timeframe == timeframe,
+                Signal.signal_type == signal_type,
+                Signal.created_at >= since,
+            )
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None

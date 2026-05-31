@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -19,11 +20,14 @@ from app.utils.candle_frame import candles_to_df
 class ScanResultItem:
     symbol: str
     binance_symbol: str
+    chart_symbol: str
+    chart_url: str
     timeframe: str
     confidence: float
     volatility_score: float
     rank: float
     signal: Signal
+    is_new: bool = False
 
 
 class MarketScanService:
@@ -41,6 +45,12 @@ class MarketScanService:
         self._strategy = strategy
         self._market_data_service = MarketDataService(candle_repository, binance_service)
 
+    def _chart_url(self, market: str, symbol: str) -> str:
+        normalized = symbol.replace("-", "").upper()
+        if market.lower() == "futures":
+            return f"https://www.binance.com/en/futures/{normalized}"
+        return f"https://www.binance.com/en/trade/{normalized}?type=spot"
+
     async def scan(
         self,
         market: str,
@@ -53,6 +63,7 @@ class MarketScanService:
         limit: int,
         auto_sync: bool,
         store_signals: bool,
+        only_new_signals_minutes: int = 0,
     ) -> list[ScanResultItem]:
         pairs = await self._market_service.list_pairs(market)
         filtered = [
@@ -91,6 +102,11 @@ class MarketScanService:
             await asyncio.gather(*[_limited(t) for t in sync_tasks])
 
         results: list[ScanResultItem] = []
+        new_threshold = (
+            datetime.utcnow() - timedelta(minutes=max(0, int(only_new_signals_minutes)))
+            if only_new_signals_minutes > 0
+            else None
+        )
         for pair in filtered:
             symbol = pair["symbol"]
             candles = await self._candle_repository.latest(symbol, timeframe, limit=lookback)
@@ -106,17 +122,32 @@ class MarketScanService:
                     context = {
                         "trend_data": candles_to_df(trend_candles),
                         "h1_data": candles_to_df(trend_candles),  # legacy compat
+                        "timeframe": timeframe,
                     }
+            elif context is None:
+                context = {"timeframe": timeframe}
 
             signal_payload = self._strategy.evaluate(data, context)
             if not signal_payload:
                 continue
 
+            signal_type = signal_payload["signal_type"]
+            is_duplicate_recent = False
+            if new_threshold is not None:
+                is_duplicate_recent = await self._signal_repository.has_recent(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    signal_type=signal_type,
+                    since=new_threshold,
+                )
+                if is_duplicate_recent:
+                    continue
+
             if store_signals:
                 signal = Signal(
                     symbol=symbol,
                     timeframe=timeframe,
-                    signal_type=signal_payload["signal_type"],
+                    signal_type=signal_type,
                     confidence=signal_payload["confidence"],
                     entry_price=signal_payload.get("entry_price"),
                     stop_loss=signal_payload.get("stop_loss"),
@@ -129,7 +160,7 @@ class MarketScanService:
                 signal = Signal(
                     symbol=symbol,
                     timeframe=timeframe,
-                    signal_type=signal_payload["signal_type"],
+                    signal_type=signal_type,
                     confidence=signal_payload["confidence"],
                     entry_price=signal_payload.get("entry_price"),
                     stop_loss=signal_payload.get("stop_loss"),
@@ -144,11 +175,14 @@ class MarketScanService:
                 ScanResultItem(
                     symbol=symbol,
                     binance_symbol=pair["symbol"],
+                    chart_symbol=symbol.replace("-", "").upper(),
+                    chart_url=self._chart_url(market, pair["symbol"]),
                     timeframe=timeframe,
                     confidence=signal_payload.get("confidence", 0),
                     volatility_score=volatility_score,
                     rank=rank,
                     signal=signal,
+                    is_new=bool(new_threshold is not None and not is_duplicate_recent),
                 )
             )
 

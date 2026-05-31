@@ -15,6 +15,7 @@ class ScanRequest(BaseSchema):
     limit: int = 20
     auto_sync: bool = False
     store_signals: bool = True
+    only_new_signals_minutes: int = 0
     min_confidence: float = 0.35
     min_confirmations: int = 1
     require_pattern: bool = False

@@ -42,7 +42,28 @@ Write-Host "[4/4] Starting services..."
 $backendCmd = "Set-Location `"$backendDir`"; `$env:DEBUG='false'; uv run uvicorn app.main:app --reload --port 8000"
 $frontendCmd = "Set-Location `"$frontendDir`"; npm run dev"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendCmd
+$backendProc = Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -PassThru
+
+Write-Host "Waiting for backend on http://localhost:8000 ..."
+$backendReady = $false
+for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 500
+    try {
+        $probe = Invoke-WebRequest -Uri "http://localhost:8000/api/health" -Method Get -TimeoutSec 2
+        if ($probe.StatusCode -ge 200 -and $probe.StatusCode -lt 500) {
+            $backendReady = $true
+            break
+        }
+    }
+    catch {
+        # backend not ready yet
+    }
+}
+
+if (-not $backendReady) {
+    Write-Warning "Backend did not become ready in time. Check backend window for errors."
+}
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendCmd | Out-Null
 
 Write-Host "Done. Backend: http://localhost:8000 | Frontend: http://localhost:5173"

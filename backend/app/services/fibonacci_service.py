@@ -12,12 +12,26 @@ class FibonacciService:
         if diff <= 0:
             return {}
 
-        levels = {
-            "0.236": swing_high - diff * 0.236,
-            "0.382": swing_high - diff * 0.382,
-            "0.5": swing_high - diff * 0.5,
-            "0.618": swing_high - diff * 0.618,
-            "0.786": swing_high - diff * 0.786,
-            "1.0": swing_low,
-        }
+        high_idx = int(segment["high"].idxmax())
+        low_idx = int(segment["low"].idxmin())
+        impulse_up = low_idx < high_idx
+
+        if impulse_up:
+            levels = {
+                "0.236": swing_high - diff * 0.236,
+                "0.382": swing_high - diff * 0.382,
+                "0.5": swing_high - diff * 0.5,
+                "0.618": swing_high - diff * 0.618,
+                "0.786": swing_high - diff * 0.786,
+                "1.0": swing_low,
+            }
+        else:
+            levels = {
+                "0.236": swing_low + diff * 0.236,
+                "0.382": swing_low + diff * 0.382,
+                "0.5": swing_low + diff * 0.5,
+                "0.618": swing_low + diff * 0.618,
+                "0.786": swing_low + diff * 0.786,
+                "1.0": swing_high,
+            }
         return levels

@@ -24,6 +24,7 @@ import {
   fetchAccountTrades,
   moveStopToBreakeven,
   moveStopToPrice,
+  moveTakeToPrice,
   placeOrder,
   resolveSymbol,
   runAnalysis,
@@ -235,6 +236,15 @@ export default function App() {
   const [scanLimit, setScanLimit] = useState(20);
   const [scanMaxPairs, setScanMaxPairs] = useState(50);
   const [scanAutoSync, setScanAutoSync] = useState(false);
+  const [onlyNewSignalsMinutes, setOnlyNewSignalsMinutes] = useState(60);
+  const [newSignalModal, setNewSignalModal] = useState({ open: false, first: null, count: 0 });
+  const [stopDragConfirmModal, setStopDragConfirmModal] = useState({
+    open: false,
+    order: null,
+    nextStop: null,
+  });
+  const [chartStopInput, setChartStopInput] = useState("");
+  const [chartTakeInput, setChartTakeInput] = useState("");
   const [activeOrder, setActiveOrder] = useState(null);
   const [indicatorData, setIndicatorData] = useState(null);
   const [mode, setMode] = useState("semi");
@@ -301,12 +311,26 @@ export default function App() {
   const breakevenTriggeredRef = useRef(new Set());
   const bgSyncLocksRef = useRef(new Set());
   const bgSyncDoneRef = useRef(new Set());
+  const candlesRequestSeqRef = useRef(0);
+  const streamContextRef = useRef("");
 
   const signalsForTimeframe = useMemo(
     () => signals.filter((item) => item.timeframe === timeframe),
     [signals, timeframe]
   );
   const latestSignalForTimeframe = useMemo(() => signalsForTimeframe[0], [signalsForTimeframe]);
+  const latestOrderForSymbol = useMemo(() => {
+    if (!orders.length) return null;
+    const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+    const bySymbol = orders.filter((order) => {
+      const orderSymbol = (order.symbol || "").replace("-", "").toUpperCase();
+      return orderSymbol === symbolKey;
+    });
+    if (!bySymbol.length) return null;
+    return [...bySymbol].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )[0];
+  }, [orders, binanceSymbol, symbol]);
   const latestActiveOrder = useMemo(() => {
     if (!orders.length) return null;
     const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
@@ -320,19 +344,41 @@ export default function App() {
   }, [orders, binanceSymbol, symbol]);
   const chartTradePlan = useMemo(() => {
     const fromSignal = latestSignalForTimeframe?.meta?.trade_plan ?? null;
-    if (fromSignal) return fromSignal;
-    if (!latestActiveOrder) return null;
-    const levels = Array.isArray(latestActiveOrder.take_levels)
-      ? latestActiveOrder.take_levels.filter((v) => Number.isFinite(v))
-      : [];
+    const sourceOrder = latestOrderForSymbol || {};
+    if (!sourceOrder.id && !fromSignal) return null;
+    const sourceSignal = fromSignal || {};
+    const levels = Array.isArray(sourceOrder.take_levels)
+      ? sourceOrder.take_levels.filter((v) => Number.isFinite(v))
+      : Array.isArray(sourceSignal.take_levels)
+        ? sourceSignal.take_levels.filter((v) => Number.isFinite(v))
+        : [];
+    const entry = Number.isFinite(sourceOrder.price) ? sourceOrder.price : sourceSignal.entry;
+    const stopLoss = Number.isFinite(sourceOrder.stop_loss) ? sourceOrder.stop_loss : sourceSignal.stop_loss;
+    const takeProfit = Number.isFinite(sourceOrder.take_profit) ? sourceOrder.take_profit : sourceSignal.take_profit;
     return {
-      entry: latestActiveOrder.price,
-      stop_loss: latestActiveOrder.stop_loss,
-      take_profit: latestActiveOrder.take_profit,
+      entry,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
       take_levels: levels,
-      source: "order",
+      source: sourceOrder.id ? "order" : "signal",
     };
-  }, [latestSignalForTimeframe, latestActiveOrder]);
+  }, [latestOrderForSymbol, latestSignalForTimeframe]);
+
+  useEffect(() => {
+    if (latestActiveOrder?.stop_loss) {
+      setChartStopInput(String(latestActiveOrder.stop_loss));
+    } else {
+      setChartStopInput("");
+    }
+  }, [latestActiveOrder?.id, latestActiveOrder?.stop_loss]);
+
+  useEffect(() => {
+    if (latestActiveOrder?.take_profit) {
+      setChartTakeInput(String(latestActiveOrder.take_profit));
+    } else {
+      setChartTakeInput("");
+    }
+  }, [latestActiveOrder?.id, latestActiveOrder?.take_profit]);
   const priceMap = useMemo(() => new Map(pairs.map((pair) => [pair.symbol, pair.last_price])), [pairs]);
   const futuresPositionMap = useMemo(() => {
     const rows = accountSummary?.market === "futures" ? accountSummary.futures_positions || [] : [];
@@ -537,6 +583,15 @@ export default function App() {
   }, [symbol, timeframe, market]);
 
   useEffect(() => {
+    streamContextRef.current = `${symbol}|${timeframe}|${market}|${dataEnv}|${binanceSymbol ?? ""}`;
+    candlesRequestSeqRef.current += 1;
+    setCandles([]);
+    setIndicatorData(null);
+    setLastTickAt(null);
+    setFeedSource("switching_pair");
+  }, [symbol, timeframe, market, dataEnv, binanceSymbol]);
+
+  useEffect(() => {
     let active = true;
     async function loadAccount() {
       try {
@@ -572,12 +627,13 @@ export default function App() {
   useEffect(() => {
     let active = true;
     let retryTimer = null;
+    const requestSeq = candlesRequestSeqRef.current;
+    const isStale = () => !active || requestSeq !== candlesRequestSeqRef.current;
 
     async function load() {
-      setIndicatorData(null);
       try {
         let data = await fetchCandles(symbol, timeframe, chartLimit);
-        if (!active) return;
+        if (isStale()) return;
         // After service reboot binanceSymbol can be unresolved for a short time;
         // use symbol fallback so auto-sync still works.
         const syncSymbol =
@@ -591,7 +647,7 @@ export default function App() {
             try {
               await syncMarket(symbol, timeframe, lookbackDays, market, syncSymbol, dataEnv);
               const fresh = await fetchCandles(symbol, timeframe, chartLimit);
-              if (!active) return;
+              if (isStale()) return;
               if (fresh.length) {
                 setCandles(fresh);
                 setLastSyncAt(Date.now());
@@ -602,30 +658,30 @@ export default function App() {
             }
           })();
         }
-        if (!active) return;
+        if (isStale()) return;
         setCandles(data);
         const [signalData, indicators] = await Promise.all([
           fetchSignals(symbol, 200).catch(() => []),
           data.length ? fetchIndicators(symbol, timeframe, indicatorLimit).catch(() => null) : Promise.resolve(null),
         ]);
-        if (!active) return;
+        if (isStale()) return;
         setSignals(signalData);
         setIndicatorData(indicators);
         if (data.length === 0) {
-          if (!active) return;
+          if (isStale()) return;
           if (!shouldSync) setStatus("История отсутствует");
         } else {
-          if (!active) return;
+          if (isStale()) return;
           if (!shouldSync) setStatus("Готово");
         }
       } catch (error) {
-        if (!active) return;
+        if (isStale()) return;
         setStatus("Ошибка загрузки, повторяю...");
         retryTimer = setTimeout(async () => {
-          if (!active) return;
+          if (isStale()) return;
           try {
             const retry = await fetchCandles(symbol, timeframe, chartLimit);
-            if (!active) return;
+            if (isStale()) return;
             if (retry.length) {
               setCandles(retry);
               setStatus("Готово");
@@ -833,6 +889,7 @@ export default function App() {
     )}&timeframe=${timeframe}&market=${market}&binance_symbol=${encodeURIComponent(
       binanceSymbol
     )}&data_env=${dataEnv}`;
+    const contextKey = streamContextRef.current;
     let isCleanup = false;
     let reconnectTimer = null;
     const socket = new WebSocket(wsUrl);
@@ -842,37 +899,43 @@ export default function App() {
     };
 
     socket.onmessage = (event) => {
-      if (isCleanup) return;
+      if (isCleanup || streamContextRef.current !== contextKey) return;
       const payload = JSON.parse(event.data);
       if (payload.type === "error") {
         setStatus(`Стрим: ${payload.message}`);
         return;
       }
       if (payload.type !== "kline") return;
-      setFeedSource("WS kline");
 
       const candle = payload.data;
-      setLastTickAt(Date.now());
-      setLiveTickSeq((v) => v + 1);
-      setFeedSource("WS aggTrade");
-      setCandles((prev) => {
-        if (!prev.length) return [candle];
-        const last = prev[prev.length - 1];
-        if (last.open_time === candle.open_time) {
-        const updated = [...prev];
-        updated[updated.length - 1] = candle;
-        return updated;
-      }
-        const next = [...prev, candle];
-        if (next.length > maxCandlesTotal) {
-          return next.slice(next.length - maxCandlesTotal);
-        }
-        return next;
-      });
+      // Use kline stream only for candle finalization to avoid intrabar jitter.
       if (candle.is_final) {
+        setCandles((prev) => {
+          if (!prev.length) return [candle];
+          const last = prev[prev.length - 1];
+          if (last.open_time === candle.open_time) {
+            const updated = [...prev];
+            updated[updated.length - 1] = {
+              ...last,
+              open: Number(candle.open),
+              high: Number(candle.high),
+              low: Number(candle.low),
+              close: Number(candle.close),
+              volume: Number(candle.volume ?? last.volume ?? 0),
+              is_final: true,
+            };
+            return updated;
+          }
+          const next = [...prev, candle];
+          return next.length > maxCandlesTotal ? next.slice(next.length - maxCandlesTotal) : next;
+        });
+        setLastTickAt(Date.now());
+        setLiveTickSeq((v) => v + 1);
+        setFeedSource("WS kline final");
         void (async () => {
           try {
             const indicators = await fetchIndicators(symbol, timeframe, indicatorLimit);
+            if (isCleanup || streamContextRef.current !== contextKey) return;
             setIndicatorData(indicators);
           } catch (indicatorError) {
             // keep last indicators on failure
@@ -913,6 +976,7 @@ export default function App() {
     const wsUrl = `${wsBase}/api/stream/trades?symbol=${encodeURIComponent(
       symbol
     )}&market=${market}&binance_symbol=${encodeURIComponent(binanceSymbol)}&data_env=${dataEnv}`;
+    const contextKey = streamContextRef.current;
     const intervalMs = timeframeToMs(timeframe) ?? 60_000;
     let closed = false;
     let reconnectTimer = null;
@@ -920,6 +984,7 @@ export default function App() {
     let socket = null;
 
     const applyPrice = (price, tradeTimeMs) => {
+      if (streamContextRef.current !== contextKey) return;
       if (!Number.isFinite(price) || price <= 0) return;
       const openTimeMs = Math.floor(tradeTimeMs / intervalMs) * intervalMs;
       const openTimeIso = new Date(openTimeMs).toISOString();
@@ -985,7 +1050,7 @@ export default function App() {
         setFeedSource("WS aggTrade");
       };
       socket.onmessage = (event) => {
-        if (closed) return;
+        if (closed || streamContextRef.current !== contextKey) return;
         try {
           const payload = JSON.parse(event.data);
           if (payload?.type !== "trade") return;
@@ -1028,14 +1093,16 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    const contextKey = streamContextRef.current;
     const intervalMs = timeframeToMs(timeframe) ?? 60_000;
     const interval = setInterval(async () => {
-      if (!active) return;
+      if (!active || streamContextRef.current !== contextKey) return;
       const staleMs = lastTickAt ? Date.now() - lastTickAt : Number.POSITIVE_INFINITY;
       const wsHealthy = wsConnected && tradeWsConnected && staleMs < 2_500;
       if (wsHealthy) return;
       try {
         const data = await fetchCandles(symbol, timeframe, 3);
+        if (!active || streamContextRef.current !== contextKey) return;
         if (!data.length) return;
         setCandles((prev) => {
           if (!prev.length) return data;
@@ -1051,6 +1118,7 @@ export default function App() {
       }
       try {
         const list = await fetchPairs(market, undefined, undefined, dataEnv);
+        if (!active || streamContextRef.current !== contextKey) return;
         const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
         const pair = list.find((item) => (item.symbol || "").replace("-", "").toUpperCase() === symbolKey);
         const lastPrice = Number(pair?.last_price);
@@ -1392,6 +1460,7 @@ export default function App() {
         limit: scanLimit,
         auto_sync: scanAutoSync,
         store_signals: true,
+        only_new_signals_minutes: onlyNewSignalsMinutes,
         min_confidence: minConfidence,
         min_confirmations: minConfirmations,
         require_pattern: requirePattern,
@@ -1400,9 +1469,14 @@ export default function App() {
         require_volume_confirm: requireVolumeConfirm,
       });
       setScanResults(response.signals ?? []);
-      setStatus(`Скан готов (${response.scanned})`);
+      const count = Number(response.new_signals_count || 0);
+      if (count > 0 && Array.isArray(response.signals) && response.signals.length > 0) {
+        setNewSignalModal({ open: true, first: response.signals[0], count });
+      }
+      setStatus(`Скан готов (${response.scanned}), новых: ${count}`);
     } catch (error) {
-      setStatus("Ошибка сканирования");
+      const message = error?.message ? String(error.message) : "unknown";
+      setStatus(`Ошибка сканирования: ${message}`);
       setScanResults([]);
     } finally {
       setScanRunning(false);
@@ -1431,6 +1505,54 @@ export default function App() {
     } catch (error) {
       setStatus(`Ошибка закрытия: ${error?.message ?? "unknown"}`);
     }
+  };
+
+  const handleMoveStopToBreakeven = async (order) => {
+    if (!order?.id) return;
+    setStatus("Переношу SL в безубыток...");
+    try {
+      await moveStopToBreakeven(order.id);
+      const updatedOrders = await fetchOrders(100);
+      setOrders(updatedOrders);
+      setStatus("SL перенесен в безубыток");
+    } catch (error) {
+      setStatus(`Ошибка BE: ${humanizeApiError(error?.message ?? "unknown")}`);
+    }
+  };
+
+  const handleMoveStopToPrice = async (order, stopPrice) => {
+    if (!order?.id || !Number.isFinite(stopPrice) || stopPrice <= 0) return;
+    setStatus("Обновляю SL...");
+    try {
+      await moveStopToPrice(order.id, stopPrice);
+      const updatedOrders = await fetchOrders(100);
+      setOrders(updatedOrders);
+      setStatus(`SL обновлен: ${stopPrice}`);
+    } catch (error) {
+      setStatus(`Ошибка SL: ${humanizeApiError(error?.message ?? "unknown")}`);
+    }
+  };
+
+  const handleMoveTakeToPrice = async (order, takePrice) => {
+    if (!order?.id || !Number.isFinite(takePrice) || takePrice <= 0) return;
+    setStatus("Обновляю TP...");
+    try {
+      await moveTakeToPrice(order.id, takePrice);
+      const updatedOrders = await fetchOrders(100);
+      setOrders(updatedOrders);
+      setStatus(`TP обновлен: ${takePrice}`);
+    } catch (error) {
+      setStatus(`Ошибка TP: ${humanizeApiError(error?.message ?? "unknown")}`);
+    }
+  };
+
+  const handleRequestStopDragConfirm = (order, nextStop) => {
+    if (!order?.id || !Number.isFinite(nextStop) || nextStop <= 0) return;
+    setStopDragConfirmModal({
+      open: true,
+      order,
+      nextStop,
+    });
   };
 
   const formatLiveTime = (value) => {
@@ -1541,6 +1663,87 @@ export default function App() {
             </div>
           </div>
           <div className="chart-body">
+            {latestActiveOrder ? (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 10,
+                  right: 10,
+                  zIndex: 6,
+                  background: "rgba(8,14,24,.92)",
+                  border: "1px solid rgba(148,163,184,.25)",
+                  borderRadius: 10,
+                  padding: 10,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  minWidth: 230,
+                }}
+              >
+                <strong style={{ fontSize: 12 }}>
+                  {latestActiveOrder.symbol} · {latestActiveOrder.side}
+                </strong>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                  Entry: {Number(latestActiveOrder.price || 0).toFixed(6)}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                  SL: {Number(latestActiveOrder.stop_loss || 0).toFixed(6)}
+                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => handleMoveStopToBreakeven(latestActiveOrder)}
+                  >
+                    SL в BE
+                  </button>
+                </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                    value={chartStopInput}
+                    onChange={(event) => setChartStopInput(event.target.value)}
+                    placeholder="Новый SL"
+                    style={{
+                      flex: 1,
+                      background: "#080e18e6",
+                      border: "1px solid rgba(148,163,184,.2)",
+                      color: "var(--text)",
+                      padding: "6px 8px",
+                      borderRadius: 8,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => handleMoveStopToPrice(latestActiveOrder, Number(chartStopInput))}
+                  >
+                    Применить
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={chartTakeInput}
+                    onChange={(event) => setChartTakeInput(event.target.value)}
+                    placeholder="Новый TP"
+                    style={{
+                      flex: 1,
+                      background: "#080e18e6",
+                      border: "1px solid rgba(148,163,184,.2)",
+                      color: "var(--text)",
+                      padding: "6px 8px",
+                      borderRadius: 8,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => handleMoveTakeToPrice(latestActiveOrder, Number(chartTakeInput))}
+                  >
+                    Применить
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <ChartPanel
               candles={candles}
               signals={signals}
@@ -1577,6 +1780,10 @@ export default function App() {
               liveTickSeq={liveTickSeq}
               onLoadMoreCandles={handleLoadMoreCandles}
               signalTradePlan={chartTradePlan}
+              activeOrder={latestActiveOrder}
+              onMoveStopToPrice={handleMoveStopToPrice}
+              onMoveTakeToPrice={handleMoveTakeToPrice}
+              onRequestStopDragConfirm={handleRequestStopDragConfirm}
             />
             {candles.length === 0 ? (
               <div className="chart-empty">Нет данных. Нажми "Синхронизировать историю".</div>
@@ -1609,6 +1816,7 @@ export default function App() {
               requireCandle={requireCandle}
               requireVolumeConfirm={requireVolumeConfirm}
               autoSync={scanAutoSync}
+              onlyNewSignalsMinutes={onlyNewSignalsMinutes}
               onLimitChange={setScanLimit}
               onMaxPairsChange={setScanMaxPairs}
               onMinVolatilityChange={setMinVolatility}
@@ -1619,6 +1827,7 @@ export default function App() {
               onRequireCandleChange={setRequireCandle}
               onRequireVolumeConfirmChange={setRequireVolumeConfirm}
               onAutoSyncChange={setScanAutoSync}
+              onOnlyNewSignalsMinutesChange={setOnlyNewSignalsMinutes}
               onRunScan={handleScan}
               onSelectResult={handleSelectScanResult}
             />
@@ -1767,6 +1976,8 @@ export default function App() {
                 futuresPositionMap={futuresPositionMap}
                 onSelectOrder={setActiveOrder}
                 onCloseOrder={handleCloseOrder}
+                onMoveStopToBreakeven={handleMoveStopToBreakeven}
+                onMoveStopToPrice={handleMoveStopToPrice}
               />
             ) : null}
           </aside>
@@ -1802,6 +2013,75 @@ export default function App() {
         minNotional={Number(currentPair?.min_notional ?? 0)}
         stepSize={Number(currentPair?.step_size ?? 0)}
       />
+      {newSignalModal.open ? (
+        <div className="modal-backdrop" onClick={() => setNewSignalModal({ open: false, first: null, count: 0 })}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Новый сигнал</h3>
+            <p style={{ color: "var(--muted)", marginTop: 8 }}>
+              Найдено новых сигналов: <strong>{newSignalModal.count}</strong>
+            </p>
+            <p style={{ color: "var(--muted)", marginTop: 6 }}>
+              {newSignalModal.first?.binance_symbol ?? newSignalModal.first?.symbol} · {newSignalModal.first?.timeframe}
+            </p>
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button
+                className="primary"
+                onClick={() => {
+                  if (newSignalModal.first) {
+                    handleSelectScanResult(newSignalModal.first);
+                  }
+                  setNewSignalModal({ open: false, first: null, count: 0 });
+                }}
+              >
+                Открыть сигнал
+              </button>
+              <button
+                className="ghost"
+                onClick={() => {
+                  const url = newSignalModal.first?.chart_url;
+                  if (url) window.open(url, "_blank", "noopener,noreferrer");
+                }}
+              >
+                Открыть Binance
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {stopDragConfirmModal.open ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => setStopDragConfirmModal({ open: false, order: null, nextStop: null })}
+        >
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Подтвердить перенос SL</h3>
+            <p style={{ color: "var(--muted)", marginTop: 8 }}>
+              {stopDragConfirmModal.order?.symbol} · {stopDragConfirmModal.order?.side}
+            </p>
+            <p style={{ color: "var(--muted)", marginTop: 6 }}>
+              Новый Stop Loss: <strong>{Number(stopDragConfirmModal.nextStop || 0).toFixed(6)}</strong>
+            </p>
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button
+                className="primary"
+                onClick={async () => {
+                  const { order, nextStop } = stopDragConfirmModal;
+                  setStopDragConfirmModal({ open: false, order: null, nextStop: null });
+                  await handleMoveStopToPrice(order, Number(nextStop));
+                }}
+              >
+                Подтвердить
+              </button>
+              <button
+                className="ghost"
+                onClick={() => setStopDragConfirmModal({ open: false, order: null, nextStop: null })}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

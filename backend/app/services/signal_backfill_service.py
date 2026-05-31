@@ -65,7 +65,10 @@ class SignalBackfillService:
                     context = {
                         "trend_data": trend_df_slice,
                         "h1_data": trend_df_slice,  # legacy compat
+                        "timeframe": timeframe,
                     }
+            elif context is None:
+                context = {"timeframe": timeframe}
             signal_payload = self._strategy.evaluate(data, context)
             if not signal_payload:
                 continue

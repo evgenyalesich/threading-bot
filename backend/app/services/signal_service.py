@@ -36,7 +36,10 @@ class SignalService:
                 context = {
                     "trend_data": candles_to_df(trend_candles),
                     "h1_data": candles_to_df(trend_candles),  # legacy compat
+                    "timeframe": timeframe,
                 }
+        elif context is None:
+            context = {"timeframe": timeframe}
 
         signal_payload = self._strategy.evaluate(data, context)
         if not signal_payload:

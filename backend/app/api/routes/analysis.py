@@ -288,12 +288,15 @@ async def scan_market(
         limit=payload.limit,
         auto_sync=payload.auto_sync,
         store_signals=payload.store_signals,
+        only_new_signals_minutes=max(int(payload.only_new_signals_minutes or 0), 0),
     )
 
     response_items = [
         ScanSignalItem(
             symbol=item.symbol,
             binance_symbol=item.binance_symbol,
+            chart_symbol=item.chart_symbol,
+            chart_url=item.chart_url,
             timeframe=item.timeframe,
             confidence=item.confidence,
             volatility_score=item.volatility_score,
@@ -303,7 +306,14 @@ async def scan_market(
         for item in results
     ]
 
-    return ScanResponse(status="ok", scanned=len(results), signals=response_items)
+    new_signals_count = sum(1 for item in results if getattr(item, "is_new", False))
+    return ScanResponse(
+        status="ok",
+        scanned=len(results),
+        new_signals_count=new_signals_count,
+        has_new_signals=new_signals_count > 0,
+        signals=response_items,
+    )
 
 
 @router.post("/backtest")
@@ -396,7 +406,10 @@ async def explain_analysis(
             context = {
                 "trend_data": trend_df,
                 "h1_data": trend_df,  # legacy compat
+                "timeframe": payload.timeframe,
             }
+    elif context is None:
+        context = {"timeframe": payload.timeframe}
     debug = strategy.explain(data, context)
     status = "ok" if not debug.get("reasons") else "no_signal"
     return AnalysisExplainResponse(status=status, debug=debug)
