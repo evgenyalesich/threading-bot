@@ -5,9 +5,9 @@ class AnalysisRequest(BaseSchema):
     symbol: str
     timeframe: str
     lookback_days: int = 120
-    strategy: str = "adaptive_pattern_confluence"
-    h1_timeframe: str = "1h"      # Entry signal timeframe (Screen 2+3)
-    trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
+    strategy: str = "unified_v3"
+    h1_timeframe: str = "15m"     # Entry confirmation timeframe
+    trend_timeframe: str = "1h"   # Higher-timeframe trend
     market: str = "spot"
     auto_execute: bool = False
     trade_env: str = "testnet"

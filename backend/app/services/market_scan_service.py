@@ -149,6 +149,17 @@ class MarketScanService:
             elif context is None:
                 context = {"timeframe": timeframe}
 
+            if getattr(self._strategy, "requires_order_book", False):
+                try:
+                    context = context or {"timeframe": timeframe}
+                    context["order_book"] = await self._market_service.order_book(
+                        market,
+                        pair.get("symbol") or symbol,
+                        limit=50,
+                    )
+                except Exception:
+                    reason_counts["order_book_unavailable"] = reason_counts.get("order_book_unavailable", 0) + 1
+
             signal_payload = self._strategy.evaluate(data, context)
             if not signal_payload:
                 debug = self._strategy.explain(data, context)

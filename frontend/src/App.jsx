@@ -246,7 +246,7 @@ function buildTradeHistory(candles, signals, limit) {
 
 export default function App() {
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [timeframe, setTimeframe] = useState("1h");
+  const [timeframe, setTimeframe] = useState("15m");
   const [lookbackDays, setLookbackDays] = useState(120);
   const [market, setMarket] = useState("spot");
   const [dataEnv, setDataEnv] = useState("real");
@@ -288,9 +288,10 @@ export default function App() {
   const [activeOrder, setActiveOrder] = useState(null);
   const [indicatorData, setIndicatorData] = useState(null);
   const [mode, setMode] = useState("semi");
-  const [h1Timeframe, setH1Timeframe] = useState("1h");
-  const [trendTimeframe, setTrendTimeframe] = useState("4h");
-  const [strategy, setStrategy] = useState("adaptive_pattern_confluence");
+  const [h1Timeframe, setH1Timeframe] = useState("15m");
+  const [trendTimeframe, setTrendTimeframe] = useState("1h");
+  const [strategy, setStrategy] = useState("unified_v3");
+  const [qualityMode, setQualityMode] = useState("balanced");
 
   const [status, setStatus] = useState("Ожидание");
   const [sidebarWidth, setSidebarWidth] = useState(360);
@@ -500,11 +501,12 @@ export default function App() {
 
   const handleStrategyChange = (nextStrategy) => {
     setStrategy(nextStrategy);
-    if (nextStrategy === "three_screens") {
+    if (nextStrategy === "unified_v3") {
       setTimeframe("15m");
       setH1Timeframe("15m");
       setTrendTimeframe("1h");
       setShowRsi(true);
+      setShowVolume(true);
     }
   };
 
@@ -1397,6 +1399,7 @@ export default function App() {
           trend_timeframe: trendTimeframe,
           strategy,
           min_confidence: minConfidence,
+          quality_mode: qualityMode,
           min_confirmations: minConfirmations,
           require_pattern: requirePattern,
           require_divergence: requireDivergence,
@@ -1446,6 +1449,7 @@ export default function App() {
             market,
             data_env: dataEnv,
             min_confidence: minConfidence,
+            quality_mode: qualityMode,
             min_confirmations: minConfirmations,
             require_pattern: requirePattern,
             require_divergence: requireDivergence,
@@ -1501,6 +1505,7 @@ export default function App() {
         h1_timeframe: h1Timeframe,
         trend_timeframe: trendTimeframe,
         min_confidence: minConfidence,
+        quality_mode: qualityMode,
         min_confirmations: minConfirmations,
         require_pattern: requirePattern,
         require_divergence: requireDivergence,
@@ -1650,6 +1655,7 @@ export default function App() {
         store_signals: true,
         only_new_signals_minutes: onlyNewSignalsMinutes,
         min_confidence: minConfidence,
+        quality_mode: qualityMode,
         min_confirmations: minConfirmations,
         require_pattern: requirePattern,
         require_divergence: requireDivergence,
@@ -1798,6 +1804,7 @@ export default function App() {
         auto_breakeven: autoBreakeven,
         leverage: market === "futures" ? leverage : null,
         min_confidence: minConfidence,
+        quality_mode: qualityMode,
         min_confirmations: minConfirmations,
         require_pattern: requirePattern,
         require_divergence: requireDivergence,
@@ -2158,6 +2165,7 @@ export default function App() {
               autoFit={autoFit}
               minConfidence={minConfidence}
               strategy={strategy}
+              qualityMode={qualityMode}
               minConfirmations={minConfirmations}
               requirePattern={requirePattern}
               requireDivergence={requireDivergence}
@@ -2203,6 +2211,7 @@ export default function App() {
               onAutoFitChange={setAutoFit}
               onMinConfidenceChange={setMinConfidence}
               onStrategyChange={handleStrategyChange}
+              onQualityModeChange={setQualityMode}
               onMinConfirmationsChange={setMinConfirmations}
               onRequirePatternChange={setRequirePattern}
               onRequireDivergenceChange={setRequireDivergence}

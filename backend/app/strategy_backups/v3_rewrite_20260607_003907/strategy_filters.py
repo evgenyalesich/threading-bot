@@ -1,16 +1,13 @@
-from app.schemas.base_schema import BaseSchema
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 
-class AnalysisExplainRequest(BaseSchema):
-    symbol: str
-    timeframe: str
-    lookback_days: int = 120
-    market: str = "spot"
-    strategy: str = "unified_v3"
-    h1_timeframe: str = "15m"
-    trend_timeframe: str = "1h"
-    data_env: str = "real"
-    min_confidence: float = 0.35
+@dataclass(frozen=True)
+class StrategyFilters:
+    # Defaults are intentionally "test-friendly" to avoid a dead UI when data/logic is still evolving.
+    # Users can tighten these from the UI.
+    min_confidence: float = 0.45
     min_confirmations: int = 1
     require_pattern: bool = False
     require_divergence: bool = False

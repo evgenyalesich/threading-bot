@@ -22,9 +22,7 @@ function modeDescription(mode) {
 
 function strategyLabel(strategy) {
   return {
-    adaptive_pattern_confluence: "Adaptive Pattern + EMA/Fib",
-    three_screens: "Три экрана Элдера",
-    ema200_fib_divergence: "EMA200 + Фибо + Дивергенция",
+    unified_v3: "Единая стратегия v3",
   }[strategy] || strategy;
 }
 
@@ -69,6 +67,7 @@ export default function ControlPanel({
   autoFit,
   minConfidence,
   strategy,
+  qualityMode,
   minConfirmations,
   requirePattern,
   requireDivergence,
@@ -116,6 +115,7 @@ export default function ControlPanel({
   onAutoFitChange,
   onMinConfidenceChange,
   onStrategyChange,
+  onQualityModeChange,
   onMinConfirmationsChange,
   onRequirePatternChange,
   onRequireDivergenceChange,
@@ -442,25 +442,32 @@ export default function ControlPanel({
           <div className="control-group">
             <label>Стратегия</label>
             <select value={strategy} onChange={(event) => onStrategyChange(event.target.value)}>
-              <option value="adaptive_pattern_confluence">Adaptive Pattern + EMA/Fib</option>
-              <option value="three_screens">Три экрана Элдера</option>
-              <option value="ema200_fib_divergence">EMA200 + Фибо + Дивергенция</option>
+              <option value="unified_v3">Единая стратегия v3</option>
+            </select>
+          </div>
+          <div className="control-group">
+            <label>Профиль входа</label>
+            <select value={qualityMode} onChange={(event) => onQualityModeChange(event.target.value)}>
+              <option value="balanced">Balanced · слои 0-1-3-5</option>
+              <option value="sniper">Sniper · все 7 слоев</option>
+              <option value="aggressive">Aggressive · SL 2.5 ATR</option>
+              <option value="breakout">Breakout · объем 150% + retest</option>
             </select>
           </div>
           <div className="control-group">
             <label>Трендовый ТФ</label>
             <select value={trendTimeframe} onChange={(e) => onTrendTimeframeChange(e.target.value)}>
+              <option value="1h">1h</option>
               <option value="4h">4h</option>
               <option value="1d">1d</option>
-              <option value="1h">1h</option>
             </select>
           </div>
           <div className="control-group">
             <label>ТФ входа</label>
             <select value={h1Timeframe} onChange={(e) => onH1TimeframeChange(e.target.value)}>
+              <option value="15m">15m</option>
               <option value="1h">1h</option>
               <option value="4h">4h</option>
-              <option value="15m">15m</option>
             </select>
           </div>
           <div className="control-group">

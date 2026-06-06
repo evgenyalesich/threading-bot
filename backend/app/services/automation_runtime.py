@@ -51,12 +51,12 @@ def _normalize_mode(value: str | None) -> str:
 class AutomationConfig:
     enabled: bool = False
     mode: str = "semi"
-    strategy: str = "adaptive_pattern_confluence"
+    strategy: str = "unified_v3"
     symbol: str = "BTCUSDT"
     scan_market_wide: bool = True
     quote: str = ""
     max_pairs: int = 631
-    timeframe: str = "1h"
+    timeframe: str = "15m"
     market: str = "futures"
     data_env: str = "testnet"
     trade_env: str = "testnet"
@@ -79,8 +79,8 @@ class AutomationConfig:
     quality_mode: str = "balanced"
     require_trend_filter: bool = True
     confluence_tolerance: float | None = None
-    h1_timeframe: str = "1h"
-    trend_timeframe: str = "4h"
+    h1_timeframe: str = "15m"
+    trend_timeframe: str = "1h"
     poll_interval_sec: int = 45
 
 

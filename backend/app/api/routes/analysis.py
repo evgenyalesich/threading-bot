@@ -76,7 +76,7 @@ def _strategy_filters_from_payload(payload) -> StrategyFilters:
 def _build_strategy_from_payload(payload) -> BaseStrategy:
     filters = _strategy_filters_from_payload(payload)
     return build_strategy(
-        getattr(payload, "strategy", "adaptive_pattern_confluence"),
+        getattr(payload, "strategy", "unified_v3"),
         filters=filters,
         h1_timeframe=str(getattr(payload, "h1_timeframe", "1h")),
         trend_timeframe=str(getattr(payload, "trend_timeframe", "4h")),
@@ -98,7 +98,15 @@ async def run_analysis(
     signal_repo = SignalRepository(session)
 
     strategy = _build_strategy_from_payload(payload)
-    signal_service = SignalService(candle_repo, signal_repo, strategy)
+    data_env = payload.data_env.lower()
+    effective_settings = settings.model_copy(update={"binance_testnet": data_env == "testnet"})
+    signal_service = SignalService(
+        candle_repo,
+        signal_repo,
+        strategy,
+        market_service=BinanceMarketService(effective_settings),
+        market=payload.market.lower(),
+    )
 
     lookback = payload.lookback_days * _candles_per_day(payload.timeframe)
     signal = await signal_service.run(symbol, payload.timeframe, lookback=lookback)

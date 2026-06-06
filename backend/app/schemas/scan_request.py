@@ -5,12 +5,12 @@ class ScanRequest(BaseSchema):
     symbol: str = ""
     market_wide: bool = True
     market: str = "spot"
-    timeframe: str = "1h"         # Entry signal timeframe (Screen 2+3)
+    timeframe: str = "15m"        # Entry signal timeframe
     lookback_days: int = 120
-    strategy: str = "adaptive_pattern_confluence"
+    strategy: str = "unified_v3"
     quote: str = "USDT"
-    h1_timeframe: str = "1h"      # Entry signal timeframe (legacy alias)
-    trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
+    h1_timeframe: str = "15m"     # Entry confirmation timeframe (legacy alias)
+    trend_timeframe: str = "1h"   # Higher-timeframe trend
     data_env: str = "real"
     min_volatility: float = 0.0
     max_pairs: int = 50

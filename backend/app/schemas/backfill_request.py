@@ -5,11 +5,11 @@ class BackfillRequest(BaseSchema):
     symbol: str
     timeframe: str
     lookback_days: int = 120
-    strategy: str = "adaptive_pattern_confluence"
+    strategy: str = "unified_v3"
     stride: int = 5
     max_bars: int = 1000
-    h1_timeframe: str = "1h"      # Entry signal timeframe (legacy)
-    trend_timeframe: str = "4h"   # Trend timeframe (Screen 1)
+    h1_timeframe: str = "15m"     # Entry confirmation timeframe
+    trend_timeframe: str = "1h"   # Higher-timeframe trend
     min_confidence: float = 0.35
     min_confirmations: int = 1
     require_pattern: bool = False
