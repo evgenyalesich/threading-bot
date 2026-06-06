@@ -6,6 +6,7 @@ from app.models.signal import Signal
 from app.repositories.candle_repository import CandleRepository
 from app.repositories.signal_repository import SignalRepository
 from app.services.binance_market_service import BinanceMarketService
+from app.services.news_service import NewsService
 from app.strategies.base_strategy import BaseStrategy
 from app.utils.jsonable import to_jsonable
 from app.utils.candle_frame import candles_to_df
@@ -18,12 +19,14 @@ class SignalService:
         signal_repository: SignalRepository,
         strategy: BaseStrategy,
         market_service: BinanceMarketService | None = None,
+        news_service: NewsService | None = None,
         market: str = "futures",
     ) -> None:
         self._candle_repository = candle_repository
         self._signal_repository = signal_repository
         self._strategy = strategy
         self._market_service = market_service
+        self._news_service = news_service
         self._market = market
 
     async def run(self, symbol: str, timeframe: str, lookback: int = 500) -> Signal | None:
@@ -45,6 +48,10 @@ class SignalService:
                 }
         elif context is None:
             context = {"timeframe": timeframe}
+
+        if self._news_service is not None:
+            context = context or {"timeframe": timeframe}
+            context.update(await self._news_service.context(symbol=symbol, market=self._market))
 
         if getattr(self._strategy, "requires_order_book", False) and self._market_service is not None:
             try:

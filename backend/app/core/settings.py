@@ -88,6 +88,28 @@ class Settings(BaseSettings):
     ui_auth_enabled: bool = Field(default=False, validation_alias="UI_AUTH_ENABLED")
     ui_auth_secret: str | None = Field(default=None, validation_alias="UI_AUTH_SECRET")
     ui_auth_cookie_secure: bool = Field(default=True, validation_alias="UI_AUTH_COOKIE_SECURE")
+    news_enabled: bool = Field(default=True, validation_alias="NEWS_ENABLED")
+    news_rss_feeds: str = Field(
+        default=(
+            "https://www.investing.com/rss/news_25.rss,"
+            "https://www.investing.com/rss/news_1.rss,"
+            "https://www.fxstreet.com/rss/news,"
+            "https://cointelegraph.com/rss,"
+            "https://www.coindesk.com/arc/outboundfeeds/rss/"
+        ),
+        validation_alias="NEWS_RSS_FEEDS",
+    )
+    news_block_minutes_before: int = Field(default=30, validation_alias="NEWS_BLOCK_MINUTES_BEFORE")
+    news_block_minutes_after: int = Field(default=30, validation_alias="NEWS_BLOCK_MINUTES_AFTER")
+    news_cache_ttl_sec: int = Field(default=180, validation_alias="NEWS_CACHE_TTL_SEC")
+    news_high_impact_keywords: str = Field(
+        default=(
+            "nfp,nonfarm,cpi,inflation,fomc,fed,powell,rate decision,interest rate,"
+            "ecb,lagarde,boe,boj,gdp,pmi,ppi,unemployment,jobless,retail sales,"
+            "war,sanction,sec,etf,hack,exploit,binance,coinbase"
+        ),
+        validation_alias="NEWS_HIGH_IMPACT_KEYWORDS",
+    )
 
     model_config = SettingsConfigDict(env_file=str(ENV_PATH), case_sensitive=False)
 
@@ -112,3 +134,9 @@ class Settings(BaseSettings):
         values = [str(self.telegram_chat_id or "").strip()]
         values.extend(item.strip() for item in self.telegram_allowed_chat_ids.split(","))
         return sorted({item for item in values if item})
+
+    def news_feed_list(self) -> list[str]:
+        return [item.strip() for item in self.news_rss_feeds.split(",") if item.strip()]
+
+    def news_high_impact_keyword_list(self) -> list[str]:
+        return [item.strip().lower() for item in self.news_high_impact_keywords.split(",") if item.strip()]

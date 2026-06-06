@@ -21,6 +21,7 @@ from app.services.binance_candle_service import BinanceCandleService
 from app.services.binance_market_service import BinanceMarketService
 from app.services.market_data_service import MarketDataService
 from app.services.market_scan_service import MarketScanService, ScanRunStats
+from app.services.news_service import NewsService
 from app.services.order_sync_service import OrderSyncService
 from app.services.signal_execution_service import (
     SignalExecutionConfig,
@@ -516,6 +517,7 @@ class AutomationRuntime:
                 market_service,
                 strategy,
                 BinanceCandleService(effective_settings),
+                NewsService(self._settings),
             )
             results, scan_stats = await scan_service.scan(
                 market=config.market,
@@ -584,6 +586,8 @@ class AutomationRuntime:
         if trend_candles:
             trend_df = candles_to_df(trend_candles)
             context = {"trend_data": trend_df, "h1_data": trend_df, "timeframe": config.timeframe}
+        context = context or {"timeframe": config.timeframe}
+        context.update(await NewsService(self._settings).context(symbol=config.symbol, market=config.market))
         signal_payload = strategy.evaluate(data, context)
         if not signal_payload:
             debug = strategy.explain(data, context)

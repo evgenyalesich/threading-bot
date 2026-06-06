@@ -25,6 +25,7 @@ from app.services.market_data_service import MarketDataService
 from app.services.backtest_service import BacktestService
 from app.services.backtest_runtime import get_backtest_runtime
 from app.services.market_scan_service import MarketScanService
+from app.services.news_service import NewsService
 from app.services.signal_service import SignalService
 from app.services.symbol_resolver_service import SymbolResolverService
 from app.services.signal_backfill_service import SignalBackfillService
@@ -105,6 +106,7 @@ async def run_analysis(
         signal_repo,
         strategy,
         market_service=BinanceMarketService(effective_settings),
+        news_service=NewsService(settings),
         market=payload.market.lower(),
     )
 
@@ -188,6 +190,7 @@ async def scan_market(
         market_service,
         strategy,
         BinanceCandleService(effective_settings),
+        NewsService(settings),
     )
 
     lookback = payload.lookback_days * _candles_per_day(payload.timeframe)
@@ -384,6 +387,8 @@ async def explain_analysis(
             }
     elif context is None:
         context = {"timeframe": payload.timeframe}
+    context = context or {"timeframe": payload.timeframe}
+    context.update(await NewsService(settings).context(symbol=payload.symbol.upper(), market=payload.market))
     debug = strategy.explain(data, context)
     status = "ok" if not debug.get("reasons") else "no_signal"
     return AnalysisExplainResponse(status=status, debug=debug)

@@ -169,6 +169,11 @@ export async function fetchOrderBook(symbol, market = "futures", dataEnv = "real
   return request(`/market/orderbook?${params.toString()}`);
 }
 
+export async function fetchNewsContext(symbol = "BTCUSDT", market = "futures") {
+  const params = new URLSearchParams({ symbol, market });
+  return request(`/news/context?${params.toString()}`);
+}
+
 export async function scanMarket(payload) {
   return request("/analysis/scan", {
     method: "POST",

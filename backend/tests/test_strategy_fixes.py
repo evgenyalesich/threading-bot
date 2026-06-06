@@ -206,3 +206,24 @@ def test_unified_v3_sniper_requires_dom_confirmation() -> None:
     debug = strategy.explain(data, context)
 
     assert "dom_not_confirmed" in debug["reasons"]
+
+
+def test_unified_v3_blocks_high_impact_news_window() -> None:
+    strategy = build_strategy(
+        "unified_v3",
+        filters=StrategyFilters(min_confidence=0.0, quality_mode="balanced"),
+        h1_timeframe="15m",
+        trend_timeframe="1h",
+    )
+    data = _entry_pullback("up")
+    context = {
+        "trend_data": _trend_data("up"),
+        "timeframe": "15m",
+        "now": datetime(2026, 6, 7, 10, 0, tzinfo=UTC),
+        "news_block": True,
+        "blocking_news": [{"title": "FOMC rate decision", "impact": "high"}],
+    }
+
+    debug = strategy.explain(data, context)
+
+    assert "news_blackout" in debug["reasons"]

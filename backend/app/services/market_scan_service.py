@@ -13,6 +13,7 @@ from app.repositories.signal_repository import SignalRepository
 from app.services.binance_candle_service import BinanceCandleService
 from app.services.binance_market_service import BinanceMarketService
 from app.services.market_data_service import MarketDataService
+from app.services.news_service import NewsService
 from app.strategies.base_strategy import BaseStrategy
 from app.models.signal import Signal
 from app.utils.candle_frame import candles_to_df
@@ -52,12 +53,14 @@ class MarketScanService:
         market_service: BinanceMarketService,
         strategy: BaseStrategy,
         binance_service: BinanceCandleService | None = None,
+        news_service: NewsService | None = None,
     ) -> None:
         self._candle_repository = candle_repository
         self._signal_repository = signal_repository
         self._market_service = market_service
         self._strategy = strategy
         self._market_data_service = MarketDataService(candle_repository, binance_service)
+        self._news_service = news_service
 
     def _chart_url(self, market: str, symbol: str) -> str:
         normalized = symbol.replace("-", "").upper()
@@ -148,6 +151,10 @@ class MarketScanService:
                     continue
             elif context is None:
                 context = {"timeframe": timeframe}
+
+            if self._news_service is not None:
+                context = context or {"timeframe": timeframe}
+                context.update(await self._news_service.context(symbol=symbol, market=market))
 
             if getattr(self._strategy, "requires_order_book", False):
                 try:

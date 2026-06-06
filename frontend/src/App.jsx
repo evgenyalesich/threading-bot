@@ -13,6 +13,7 @@ import AccountPanel from "./components/AccountPanel.jsx";
 import OrderConfirmModal from "./components/OrderConfirmModal.jsx";
 import AutomationCenter from "./components/AutomationCenter.jsx";
 import OrderBookPanel from "./components/OrderBookPanel.jsx";
+import NewsGuardPanel from "./components/NewsGuardPanel.jsx";
 import {
   approveAutomationSignal,
   closeOrderPosition,
@@ -21,6 +22,7 @@ import {
   enableAutomation,
   fetchCandles,
   fetchIndicators,
+  fetchNewsContext,
   fetchOrderBook,
   fetchOrders,
   fetchPairs,
@@ -344,6 +346,9 @@ export default function App() {
   const [orderBook, setOrderBook] = useState(null);
   const [orderBookLoading, setOrderBookLoading] = useState(false);
   const [orderBookError, setOrderBookError] = useState("");
+  const [newsContext, setNewsContext] = useState(null);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsError, setNewsError] = useState("");
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
   const [leverage, setLeverage] = useState(25);
   const [fitRequest, setFitRequest] = useState(0);
@@ -534,6 +539,31 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [activeTab, binanceSymbol, market, dataEnv]);
+
+  useEffect(() => {
+    if (activeTab !== "trade" || !binanceSymbol) return undefined;
+    let active = true;
+    const loadNews = async () => {
+      try {
+        setNewsLoading(true);
+        const context = await fetchNewsContext(binanceSymbol, market);
+        if (!active) return;
+        setNewsContext(context);
+        setNewsError("");
+      } catch (error) {
+        if (!active) return;
+        setNewsError(error?.message || "news_unavailable");
+      } finally {
+        if (active) setNewsLoading(false);
+      }
+    };
+    loadNews();
+    const timer = window.setInterval(loadNews, 60000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTab, binanceSymbol, market]);
 
   const filteredPairs = useMemo(() => {
     return pairs
@@ -2279,6 +2309,13 @@ export default function App() {
                 onReject={(signalId) =>
                   runAutomationAction(() => rejectAutomationSignal(signalId), `Сигнал ${signalId} отклонен`)
                 }
+              />
+            ) : null}
+            {activeTab === "trade" ? (
+              <NewsGuardPanel
+                context={newsContext}
+                loading={newsLoading}
+                error={newsError}
               />
             ) : null}
             {activeTab === "trade" ? (
