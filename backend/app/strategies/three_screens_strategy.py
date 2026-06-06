@@ -8,14 +8,12 @@ from app.strategies.strategy_filters import StrategyFilters
 
 
 class ThreeScreensStrategy(BaseStrategy):
-    """Elder's Triple Screen strategy — intraday version.
+    """Elder's Triple Screen strategy — H1 trend + M15 pullback version.
 
-    Screen 1 (4H): EMA26 slope determines macro trend direction.
-                   EMA200 alignment confirms bull/bear market.
-    Screen 2 (1H): Stochastic(5,3,3) + RSI(14) identify oversold/overbought
-                   corrections within the 4H trend. Both are required.
-    Screen 3 (1H): MARKET entry at close of signal candle.
-    Stop-loss: local extremum of last 10 1H bars, minimum 1.0*ATR distance.
+    Screen 1 (H1): EMA26 slope determines trend direction.
+    Screen 2 (M15): Stochastic(5,3,3) identifies oversold/overbought pullback.
+    Screen 3 (M15): stop-entry above/below signal candle.
+    Stop-loss: nearest local extremum on M15 plus ATR buffer.
     Take-profit: TP1=1.5R (breakeven trigger), TP2=2.5R (full exit).
 
     context keys:
@@ -29,14 +27,14 @@ class ThreeScreensStrategy(BaseStrategy):
     min_bars = 30
 
     # Services look for these attributes to know which TFs to load
-    trend_timeframe: str = "4h"   # Screen 1 — macro trend
-    h1_timeframe: str = "1h"      # Screen 2+3 — entry signal (kept for compat)
+    trend_timeframe: str = "1h"   # Screen 1 — trend
+    h1_timeframe: str = "15m"     # Screen 2+3 — entry signal (kept for compat)
 
     def __init__(
         self,
         indicator_service: IndicatorService,
-        trend_timeframe: str = "4h",
-        h1_timeframe: str = "1h",
+        trend_timeframe: str = "1h",
+        h1_timeframe: str = "15m",
         filters: StrategyFilters | None = None,
     ) -> None:
         self._ind = indicator_service
@@ -58,7 +56,7 @@ class ThreeScreensStrategy(BaseStrategy):
         debug: dict = {"reasons": []}
         ctx = context or {}
 
-        # Screen 1: 4H trend via EMA26 slope + EMA200 alignment
+        # Screen 1: H1 trend via EMA26 slope + optional EMA200 alignment
         # Support both "trend_data" (new) and "h1_data" (legacy) keys
         trend_data: pd.DataFrame | None = ctx.get("trend_data") if ctx.get("trend_data") is not None else ctx.get("h1_data")
         if trend_data is None or len(trend_data) < 30:
@@ -107,7 +105,7 @@ class ThreeScreensStrategy(BaseStrategy):
         debug["ema26_now"] = ema26_now
         debug["ema26_prev"] = ema26_prev
 
-        # Screen 2: 1H oscillators — Stochastic(5,3,3) + RSI(14) both required
+        # Screen 2: M15 oscillator pullback against H1 trend
         if len(data) < self.min_bars:
             debug["reasons"].append("insufficient_entry_bars")
             return None, debug
@@ -139,10 +137,10 @@ class ThreeScreensStrategy(BaseStrategy):
             return None, debug
 
         if h1_trend == 1:
-            stoch_confirm = last_k < 30 and last_d < 30
+            stoch_confirm = last_k < 20 and last_d < 25
             rsi_confirm = last_rsi < 50
         else:
-            stoch_confirm = last_k > 70 and last_d > 70
+            stoch_confirm = last_k > 80 and last_d > 75
             rsi_confirm = last_rsi > 50
 
         debug.update({
@@ -190,14 +188,17 @@ class ThreeScreensStrategy(BaseStrategy):
             debug["reasons"].append("confidence_below_min")
             return None, debug
 
-        # Screen 3: MARKET entry at close of signal candle (1H)
-        entry = float(close.iloc[-1])
+        # Screen 3: stop-entry around the M15 signal candle.
+        last_high = float(high.iloc[-1])
+        last_low = float(low.iloc[-1])
+        tick_buffer = max(last_atr * 0.05, float(close.iloc[-1]) * 0.0002)
+        entry = last_high + tick_buffer if side == "long" else last_low - tick_buffer
 
         if body_ratio < 0.18:
             debug["reasons"].append("weak_signal_candle")
             return None, debug
 
-        # Stop-loss: local extremum of last 10 bars, minimum 1.0 ATR from entry
+        # Stop-loss: local extremum of last 10 M15 bars, minimum 1.0 ATR from entry
         lookback_sl = min(10, len(data))
         min_sl_dist = last_atr * 1.0
 
@@ -226,8 +227,9 @@ class ThreeScreensStrategy(BaseStrategy):
         breakeven_at = take_levels[0]
 
         rationale = (
-            f"three_screens: trend={'bull' if h1_trend == 1 else 'bear'} (4H EMA26), "
-            f"stoch(K={last_k:.1f}/D={last_d:.1f}), rsi={last_rsi:.1f} (1H), "
+            f"three_screens: trend={'bull' if h1_trend == 1 else 'bear'} ({self.trend_timeframe} EMA26), "
+            f"stoch(K={last_k:.1f}/D={last_d:.1f}), rsi={last_rsi:.1f} ({self.h1_timeframe}), "
+            f"entry_order={'BUY STOP' if side == 'long' else 'SELL STOP'}, "
             f"atr={last_atr:.4f}, conf={confidence:.2f}, "
             f"entry={entry:.4f}, sl={stop_loss:.4f}, risk={risk:.4f}"
         )
@@ -264,6 +266,16 @@ class ThreeScreensStrategy(BaseStrategy):
                     "breakeven_at": breakeven_at,
                     "reward_risk": 2.5,
                     "stop_type": "atr_local_extremum",
+                    "entry_order_type": "STOP_MARKET",
+                    "entry_trigger": entry,
+                },
+                "entry_order": {
+                    "type": "STOP_MARKET",
+                    "label": "BUY STOP" if side == "long" else "SELL STOP",
+                    "trigger": entry,
+                    "buffer": tick_buffer,
+                    "signal_candle_high": last_high,
+                    "signal_candle_low": last_low,
                 },
             },
         }

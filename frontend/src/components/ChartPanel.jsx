@@ -170,17 +170,24 @@ function detectDivergence(chartData) {
 function calculateFibLevels(chartData, lookback = 120) {
   if (!chartData.length) return [];
   const slice = chartData.slice(-lookback);
-  const highs = slice.map((candle) => candle.high);
-  const lows = slice.map((candle) => candle.low);
+  const highs = slice.map((candle) => Number(candle.high));
+  const lows = slice.map((candle) => Number(candle.low));
   const high = Math.max(...highs);
   const low = Math.min(...lows);
   const diff = high - low;
   if (diff <= 0) return [];
+  const highIndex = highs.indexOf(high);
+  const lowIndex = lows.indexOf(low);
+  const isDownImpulse = highIndex < lowIndex;
+
+  const levelValue = (ratio) => (
+    isDownImpulse ? low + diff * ratio : high - diff * ratio
+  );
 
   return [
-    { label: "0.5", value: high - diff * 0.5, color: "#7dd3fc" },
-    { label: "0.618", value: high - diff * 0.618, color: "#38bdf8" },
-    { label: "0.786", value: high - diff * 0.786, color: "#0284c7" },
+    { label: "0.5", value: levelValue(0.5), color: "#7dd3fc" },
+    { label: "0.618", value: levelValue(0.618), color: "#38bdf8" },
+    { label: "0.786", value: levelValue(0.786), color: "#0284c7" },
   ];
 }
 
@@ -313,10 +320,17 @@ export default function ChartPanel({
   }, [indicatorData, chartData]);
   const fibLevels = useMemo(() => calculateFibLevels(chartData), [chartData]);
   const divergenceMarkers = useMemo(() => detectDivergence(chartData), [chartData]);
-  const supportLevels = useMemo(
-    () => indicatorData?.support_resistance ?? [],
-    [indicatorData]
-  );
+  const supportLevels = useMemo(() => {
+    const raw = indicatorData?.support_resistance ?? [];
+    if (!raw.length) return [];
+    const lastClose = Number(chartData[chartData.length - 1]?.close);
+    const normalized = raw.map(Number).filter(Number.isFinite);
+    if (!Number.isFinite(lastClose) || lastClose <= 0) return normalized.slice(0, 10);
+    return normalized
+      .sort((a, b) => Math.abs(a - lastClose) - Math.abs(b - lastClose))
+      .slice(0, 10)
+      .sort((a, b) => b - a);
+  }, [indicatorData, chartData]);
   const volumeData = useMemo(
     () =>
       candles.map((candle) => ({
@@ -897,11 +911,11 @@ export default function ChartPanel({
     srLinesRef.current = supportLevels.map((level) =>
       seriesRef.current.createPriceLine({
         price: level,
-        color: "rgba(148,163,184,0.5)",
+        color: "rgba(148,163,184,0.28)",
         lineWidth: 1,
         lineStyle: 3,
-        axisLabelVisible: true,
-        title: "SR",
+        axisLabelVisible: false,
+        title: "",
       })
     );
   }, [supportLevels, showSupportRes]);

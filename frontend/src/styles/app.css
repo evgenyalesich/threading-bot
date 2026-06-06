@@ -973,27 +973,38 @@ button.ghost.mini {
   flex-direction: column;
   gap: 10px;
   max-height: 200px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .journal-row,
 .mapping-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
   background: rgba(8, 14, 24, 0.8);
   border-radius: 12px;
   padding: 10px 12px;
   border: none;
   color: var(--text);
   cursor: pointer;
+  min-width: 0;
+  text-align: left;
 }
 
 .journal-row-wrap {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   align-items: center;
+  min-width: 0;
+}
+
+.journal-row-wrap > div[style] {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .journal-close-btn {
@@ -1004,6 +1015,7 @@ button.ghost.mini {
   padding: 8px 10px;
   cursor: pointer;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .journal-price {
@@ -1016,6 +1028,16 @@ button.ghost.mini {
   display: block;
   font-size: 11px;
   color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.journal-row > div:first-child {
+  min-width: 0;
+}
+
+.journal-row > div:last-child {
+  flex: 0 0 auto;
+  text-align: right;
 }
 
 .journal-pnl.positive {

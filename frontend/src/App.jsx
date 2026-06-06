@@ -493,6 +493,16 @@ export default function App() {
     }
   };
 
+  const handleStrategyChange = (nextStrategy) => {
+    setStrategy(nextStrategy);
+    if (nextStrategy === "three_screens") {
+      setTimeframe("15m");
+      setH1Timeframe("15m");
+      setTrendTimeframe("1h");
+      setShowRsi(true);
+    }
+  };
+
   const filteredPairs = useMemo(() => {
     return pairs
       .filter((pair) => {
@@ -550,14 +560,16 @@ export default function App() {
     [candles, signalsForTimeframe, tradeHistoryLimit]
   );
   const orderTrades = useMemo(() => {
-    const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
     return orders
-      .filter((order) => ((order.symbol || "").replace("-", "").toUpperCase() === symbolKey))
       .map((order) => {
         const isClosed = ["closed", "filled", "cancelled"].includes((order.status || "").toLowerCase());
         const position = futuresPositionMap.get((order.symbol || "").replace("-", "").toUpperCase());
         const fallbackLast = Number(priceMap.get(order.symbol));
-        const current = candles.length ? Number(candles[candles.length - 1].close) : fallbackLast;
+        const orderSymbol = (order.symbol || "").replace("-", "").toUpperCase();
+        const selectedSymbol = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+        const current = orderSymbol === selectedSymbol && candles.length
+          ? Number(candles[candles.length - 1].close)
+          : fallbackLast;
         const entry = !isClosed && position ? Number(position.entry_price) : Number(order.price || current || 0);
         const exitPrice = isClosed
           ? Number(order.exit_price || order.price || entry)
@@ -598,16 +610,22 @@ export default function App() {
           },
         };
       });
-  }, [orders, binanceSymbol, symbol, timeframe, candles, priceMap, futuresPositionMap]);
+  }, [orders, timeframe, candles, priceMap, futuresPositionMap, binanceSymbol, symbol]);
+
+  const chartOrderTrades = useMemo(() => {
+    const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+    return orderTrades.filter((trade) => (trade.symbol || "").replace("-", "").toUpperCase() === symbolKey);
+  }, [orderTrades, binanceSymbol, symbol]);
 
   const displayedTrades = activeTab === "backtest" ? backtestTrades : orderTrades;
   const tradeHistorySource = activeTab === "backtest" ? "backtest" : "orders";
   const chartTrades = useMemo(() => {
     if (!displayedTrades.length) return [];
-    const ordered = [...displayedTrades].sort((a, b) => a.entry_time - b.entry_time);
+    const chartSource = activeTab === "backtest" ? displayedTrades : chartOrderTrades;
+    const ordered = [...chartSource].sort((a, b) => a.entry_time - b.entry_time);
     const limit = Math.max(5, Number(tradeHistoryLimit) || 20);
     return ordered.slice(-limit);
-  }, [displayedTrades, tradeHistoryLimit]);
+  }, [displayedTrades, chartOrderTrades, activeTab, tradeHistoryLimit]);
 
   const chartLimit = useMemo(() => Math.max(chartBars, 200), [chartBars]);
   const indicatorLimit = useMemo(() => Math.min(Math.max(chartLimit, 240), 5000), [chartLimit]);
@@ -2154,7 +2172,7 @@ export default function App() {
               onBackfillMaxBarsChange={setBackfillMaxBars}
               onAutoFitChange={setAutoFit}
               onMinConfidenceChange={setMinConfidence}
-              onStrategyChange={setStrategy}
+              onStrategyChange={handleStrategyChange}
               onMinConfirmationsChange={setMinConfirmations}
               onRequirePatternChange={setRequirePattern}
               onRequireDivergenceChange={setRequireDivergence}

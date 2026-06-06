@@ -89,7 +89,11 @@ class ExecutionService:
                 "quantity": order_create.quantity,
             },
         }
-        if order_create.price and order_create.order_type.upper() != "MARKET":
+        order_type = order_create.order_type.upper()
+        if resolved_market == "futures" and order_create.price and order_type in {"STOP_MARKET", "TAKE_PROFIT_MARKET"}:
+            payload["order"]["stopPrice"] = order_create.price
+            payload["order"]["workingType"] = "CONTRACT_PRICE"
+        elif order_create.price and order_type != "MARKET":
             payload["order"]["price"] = order_create.price
 
         try:

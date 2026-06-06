@@ -98,12 +98,19 @@ class SignalExecutionService:
             exchange = BinanceExchange(trade_settings)
         execution_service = ExecutionService(order_repo, exchange)
         trade_plan = signal.meta.get("trade_plan") if signal.meta else None
+        effective_order_type = (
+            str(trade_plan.get("entry_order_type"))
+            if trade_plan and trade_plan.get("entry_order_type")
+            else config.order_type
+        )
+        if market != "futures" and effective_order_type.upper() == "STOP_MARKET":
+            effective_order_type = "MARKET"
         order_create = OrderCreate(
             exchange="binance",
             market=market,
             symbol=resolved_symbol,
             side="BUY" if signal.signal_type == "long" else "SELL",
-            order_type=config.order_type,
+            order_type=effective_order_type,
             quantity=quantity,
             trade_env=config.trade_env,
             quote_amount=config.quote_amount,
