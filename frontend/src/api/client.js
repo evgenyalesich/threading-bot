@@ -159,6 +159,16 @@ export async function fetchPairs(market = "spot", quote, minVolatility, dataEnv 
   return request(`/market/pairs?${params.toString()}`);
 }
 
+export async function fetchOrderBook(symbol, market = "futures", dataEnv = "real", limit = 50) {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    data_env: dataEnv,
+    limit: String(limit),
+  });
+  return request(`/market/orderbook?${params.toString()}`);
+}
+
 export async function scanMarket(payload) {
   return request("/analysis/scan", {
     method: "POST",

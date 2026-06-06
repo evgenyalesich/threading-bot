@@ -452,9 +452,15 @@ export default function ChartPanel({
       levels.push({ price: plan.breakeven_at, label: "BE", color: "#94a3b8" });
     }
     if (Array.isArray(plan.take_levels)) {
+      const lastTakeIndex = plan.take_levels.length - 1;
       plan.take_levels.forEach((level, index) => {
         if (!Number.isFinite(level)) return;
-        levels.push({ price: level, label: `TP${index + 1}`, color: "#22c55e" });
+        levels.push({
+          price: level,
+          label: `TP${index + 1}`,
+          color: "#22c55e",
+          major: index === lastTakeIndex,
+        });
       });
     } else if (Number.isFinite(plan.take_profit)) {
       levels.push({ price: plan.take_profit, label: "TP", color: "#22c55e" });
@@ -931,10 +937,10 @@ export default function ChartPanel({
       seriesRef.current.createPriceLine({
         price: level.price,
         color: level.color,
-        lineWidth: 1,
+        lineWidth: level.major || ["Entry", "Stop", "TP"].includes(level.label) ? 2 : 1,
         lineStyle: 0,
-        axisLabelVisible: true,
-        title: level.label,
+        axisLabelVisible: level.major || ["Entry", "Stop", "TP"].includes(level.label),
+        title: level.major || ["Entry", "Stop", "TP"].includes(level.label) ? level.label : "",
       })
     );
   }, [tradePlanLevels, showTradePlan]);

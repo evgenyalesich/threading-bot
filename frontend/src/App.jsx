@@ -12,6 +12,7 @@ import AnalysisDebugPanel from "./components/AnalysisDebugPanel.jsx";
 import AccountPanel from "./components/AccountPanel.jsx";
 import OrderConfirmModal from "./components/OrderConfirmModal.jsx";
 import AutomationCenter from "./components/AutomationCenter.jsx";
+import OrderBookPanel from "./components/OrderBookPanel.jsx";
 import {
   approveAutomationSignal,
   closeOrderPosition,
@@ -20,6 +21,7 @@ import {
   enableAutomation,
   fetchCandles,
   fetchIndicators,
+  fetchOrderBook,
   fetchOrders,
   fetchPairs,
   fetchSignals,
@@ -338,6 +340,9 @@ export default function App() {
   const [accountTrades, setAccountTrades] = useState([]);
   const [automationState, setAutomationState] = useState(null);
   const [automationLoading, setAutomationLoading] = useState(false);
+  const [orderBook, setOrderBook] = useState(null);
+  const [orderBookLoading, setOrderBookLoading] = useState(false);
+  const [orderBookError, setOrderBookError] = useState("");
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
   const [leverage, setLeverage] = useState(25);
   const [fitRequest, setFitRequest] = useState(0);
@@ -502,6 +507,31 @@ export default function App() {
       setShowRsi(true);
     }
   };
+
+  useEffect(() => {
+    if (activeTab !== "trade" || !binanceSymbol) return undefined;
+    let active = true;
+    const loadOrderBook = async () => {
+      try {
+        setOrderBookLoading(true);
+        const book = await fetchOrderBook(binanceSymbol, market, dataEnv, 50);
+        if (!active) return;
+        setOrderBook(book);
+        setOrderBookError("");
+      } catch (error) {
+        if (!active) return;
+        setOrderBookError(error?.message || "orderbook_unavailable");
+      } finally {
+        if (active) setOrderBookLoading(false);
+      }
+    };
+    loadOrderBook();
+    const timer = window.setInterval(loadOrderBook, 4500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTab, binanceSymbol, market, dataEnv]);
 
   const filteredPairs = useMemo(() => {
     return pairs
@@ -2240,6 +2270,13 @@ export default function App() {
                 onReject={(signalId) =>
                   runAutomationAction(() => rejectAutomationSignal(signalId), `Сигнал ${signalId} отклонен`)
                 }
+              />
+            ) : null}
+            {activeTab === "trade" ? (
+              <OrderBookPanel
+                book={orderBook}
+                loading={orderBookLoading}
+                error={orderBookError}
               />
             ) : null}
             {activeTab === "scanner" || activeTab === "trade" ? (

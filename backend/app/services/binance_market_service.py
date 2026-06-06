@@ -44,6 +44,9 @@ class BinanceMarketService:
     def _ticker_path(self, market: str) -> str:
         return "/fapi/v1/ticker/24hr" if market == "futures" else "/api/v3/ticker/24hr"
 
+    def _depth_path(self, market: str) -> str:
+        return "/fapi/v1/depth" if market == "futures" else "/api/v3/depth"
+
     async def _fetch_json(self, url: str, timeout: httpx.Timeout) -> dict | list:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url)
@@ -177,3 +180,83 @@ class BinanceMarketService:
         if last_exc:
             raise last_exc
         return []
+
+    async def order_book(self, market: str, symbol: str, limit: int = 50) -> dict:
+        market = market.lower()
+        normalized_symbol = symbol.replace("-", "").upper()
+        safe_limit = min(max(int(limit or 50), 5), 1000)
+        last_exc: Exception | None = None
+        timeout = httpx.Timeout(8.0, connect=3.0)
+        for base in self._rest_bases(market):
+            try:
+                payload = await self._fetch_json(
+                    f"{base}{self._depth_path(market)}?symbol={normalized_symbol}&limit={safe_limit}",
+                    timeout=timeout,
+                )
+                if isinstance(payload, dict):
+                    return self._analyze_order_book(market, normalized_symbol, payload, safe_limit)
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+        return self._analyze_order_book(market, normalized_symbol, {"bids": [], "asks": []}, safe_limit)
+
+    def _book_side(self, rows: list, limit: int) -> list[dict]:
+        levels: list[dict] = []
+        cumulative_qty = 0.0
+        cumulative_notional = 0.0
+        for raw in rows[:limit]:
+            try:
+                price = float(raw[0])
+                qty = float(raw[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            notional = price * qty
+            cumulative_qty += qty
+            cumulative_notional += notional
+            levels.append(
+                {
+                    "price": price,
+                    "quantity": qty,
+                    "notional": notional,
+                    "cumulative_quantity": cumulative_qty,
+                    "cumulative_notional": cumulative_notional,
+                }
+            )
+        return levels
+
+    def _analyze_order_book(self, market: str, symbol: str, payload: dict, limit: int) -> dict:
+        bids = self._book_side(payload.get("bids") or [], limit)
+        asks = self._book_side(payload.get("asks") or [], limit)
+        bid_notional = sum(level["notional"] for level in bids)
+        ask_notional = sum(level["notional"] for level in asks)
+        total_notional = bid_notional + ask_notional
+        imbalance = (bid_notional - ask_notional) / total_notional if total_notional > 0 else 0.0
+        best_bid = bids[0]["price"] if bids else None
+        best_ask = asks[0]["price"] if asks else None
+        mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else None
+        spread = (best_ask - best_bid) if best_bid and best_ask else None
+        spread_pct = spread / mid_price * 100 if spread and mid_price else None
+        bid_walls = sorted(bids, key=lambda level: level["notional"], reverse=True)[:5]
+        ask_walls = sorted(asks, key=lambda level: level["notional"], reverse=True)[:5]
+        pressure = "bullish" if imbalance > 0.12 else "bearish" if imbalance < -0.12 else "neutral"
+        return {
+            "market": market,
+            "symbol": symbol,
+            "limit": limit,
+            "last_update_id": payload.get("lastUpdateId") or payload.get("lastUpdateID"),
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "mid_price": mid_price,
+            "spread": spread,
+            "spread_pct": spread_pct,
+            "bid_notional": bid_notional,
+            "ask_notional": ask_notional,
+            "imbalance": imbalance,
+            "pressure": pressure,
+            "bids": bids[:20],
+            "asks": asks[:20],
+            "bid_walls": bid_walls,
+            "ask_walls": ask_walls,
+        }

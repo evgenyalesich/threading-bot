@@ -97,6 +97,29 @@ async def list_pairs(
     return [MarketPairRead.model_validate(pair) for pair in pairs]
 
 
+@router.get("/orderbook")
+async def get_order_book(
+    symbol: str,
+    market: str = Query(default="futures"),
+    limit: int = Query(default=50, ge=5, le=1000),
+    data_env: str = Query(default="real"),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    normalized_market = market.lower()
+    effective_settings = settings.model_copy(update={"binance_testnet": data_env.lower() == "testnet"})
+    mapping_repo = SymbolMappingRepository(session)
+    resolver = SymbolResolverService(mapping_repo)
+    resolved_symbol = await resolver.resolve(symbol.upper(), normalized_market)
+    target_symbol = resolved_symbol or symbol.upper().replace("-", "")
+    service = BinanceMarketService(effective_settings)
+    try:
+        return await service.order_book(normalized_market, target_symbol, limit=limit)
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=502, detail="binance_timeout")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="binance_unreachable")
+
+
 @router.get("/indicators")
 async def get_indicators(
     symbol: str,
