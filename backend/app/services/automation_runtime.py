@@ -126,6 +126,7 @@ class AutomationRuntime:
         self._latest_signal: Signal | None = None
         self._latest_order: Order | None = None
         self._last_signal_fingerprint: str | None = None
+        self._last_order_alert_fingerprint: str | None = None
         self._live_state: str = "idle" if self._config.enabled else "off"
         self._live_message: str | None = (
             "Ожидание первого цикла." if self._config.enabled else "Автоматизация остановлена."
@@ -351,13 +352,30 @@ class AutomationRuntime:
         async with self._lock:
             self._last_check_at = datetime.now(UTC)
             self._next_check_at = None
-            self._scan_processed_pairs = 0
-            self._scan_total_pairs = 0
-            self._scan_matched_signals = 0
-            self._scan_phase = "starting"
-            self._live_state = "scanning"
-            self._live_message = "Ищем свежий сетап по выбранному рынку."
             async with self._session_manager.session_factory()() as session:
+                active_order = await self._monitor_active_order(session)
+                if active_order is not None:
+                    self._next_check_at = datetime.now(UTC) + timedelta(seconds=self._config.poll_interval_sec)
+                    asyncio.create_task(self._push_progress_cards(), name="telegram-order-monitor")
+                    return
+
+                if self._pending and not force:
+                    pending = self._pending[0]
+                    self._live_state = "waiting_approve"
+                    self._live_message = (
+                        f"Сигнал #{pending.signal_id} {pending.signal.signal_type.upper()} "
+                        f"{pending.signal.symbol} ждет твоего решения."
+                    )
+                    self._next_check_at = datetime.now(UTC) + timedelta(seconds=self._config.poll_interval_sec)
+                    asyncio.create_task(self._push_progress_cards(), name="telegram-pending-monitor")
+                    return
+
+                self._scan_processed_pairs = 0
+                self._scan_total_pairs = 0
+                self._scan_matched_signals = 0
+                self._scan_phase = "starting"
+                self._live_state = "scanning"
+                self._live_message = "Ищем свежий сетап по выбранному рынку."
                 signal = await self._detect_signal(session)
                 if signal is None:
                     self._live_state = "idle"
@@ -402,6 +420,28 @@ class AutomationRuntime:
                 self._scan_phase = "complete"
                 self._next_check_at = datetime.now(UTC) + timedelta(seconds=self._config.poll_interval_sec)
                 asyncio.create_task(self._push_progress_cards(), name="telegram-scan-complete")
+
+    async def _monitor_active_order(self, session: AsyncSession) -> Order | None:
+        order_repo = OrderRepository(session)
+        active_orders = await order_repo.list_active(limit=10)
+        if not active_orders:
+            return None
+
+        sync_service = OrderSyncService(order_repo, self._settings)
+        for candidate in active_orders:
+            synced = await sync_service.sync_one(candidate)
+            if self._order_is_active(synced):
+                self._latest_order = synced
+                self._live_state = "order_open"
+                self._live_message = (
+                    f"Мониторим позицию #{synced.id} {synced.side} {synced.symbol}: "
+                    f"entry {self._format_price(synced.price)}, SL {self._format_price(synced.stop_loss)}, "
+                    f"TP {self._format_price(synced.take_profit)}."
+                )
+                await self._send_order_alert_if_changed(synced, "monitoring")
+                return synced
+            await self._send_order_alert_if_changed(synced, "closed")
+        return None
 
     def _update_scan_progress(self, processed: int, total: int, matched: int, phase: str) -> None:
         self._scan_processed_pairs = processed
@@ -490,6 +530,7 @@ class AutomationRuntime:
                 symbol=config.symbol,
                 market_wide=config.scan_market_wide,
                 progress_callback=self._update_scan_progress,
+                stop_after_limit=True,
             )
             self._last_scan_stats = scan_stats
             if not results:
@@ -598,12 +639,40 @@ class AutomationRuntime:
                     f"SL: {result.order.stop_loss}\nTP: {result.order.take_profit}",
                     reply_markup=self._telegram.order_actions_keyboard(result.order.id),
                 )
+                self._last_order_alert_fingerprint = self._order_alert_fingerprint(result.order)
                 return result.order
             self._last_error = result.error
             self._live_state = "error"
             self._live_message = result.error or result.status
             self._add_log("error", "order_execution_failed", result.error or result.status, meta={"status": result.status})
             return None
+
+    def _order_alert_fingerprint(self, order: Order) -> str:
+        return (
+            f"{order.id}:{order.status}:{self._format_price(order.stop_loss)}:"
+            f"{self._format_price(order.take_profit)}:{self._format_price(order.exit_price)}:"
+            f"{self._format_price(order.realized_pnl)}"
+        )
+
+    async def _send_order_alert_if_changed(self, order: Order, event: str) -> None:
+        fingerprint = self._order_alert_fingerprint(order)
+        if fingerprint == self._last_order_alert_fingerprint:
+            return
+        self._last_order_alert_fingerprint = fingerprint
+        is_active = self._order_is_active(order)
+        pnl = f"{float(order.realized_pnl):+.2f}%" if order.realized_pnl is not None else "--"
+        title = "ПОЗИЦИЯ ПОД КОНТРОЛЕМ" if is_active else "ПОЗИЦИЯ ЗАКРЫТА"
+        await self._telegram.send_message(
+            f"{title}\n\n"
+            f"#{order.id} {order.side} {order.symbol} · {order.status.upper()}\n"
+            f"Event: {event}\n"
+            f"Entry: {self._format_price(order.price)}\n"
+            f"SL: {self._format_price(order.stop_loss)}\n"
+            f"TP: {self._format_price(order.take_profit)}\n"
+            f"Exit: {self._format_price(order.exit_price)}\n"
+            f"PnL: {pnl}",
+            reply_markup=self._telegram.order_actions_keyboard(order.id, active=is_active),
+        )
 
     def _get_telegram_session(self, chat_id: str) -> TelegramSession:
         session = self._telegram_sessions.get(chat_id)

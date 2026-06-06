@@ -13,3 +13,13 @@ class OrderRepository(BaseRepository[Order]):
         stmt = select(Order).order_by(Order.created_at.desc()).limit(limit)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_active(self, limit: int = 20) -> list[Order]:
+        stmt = (
+            select(Order)
+            .where(Order.status.notin_(["closed", "filled", "cancelled", "rejected"]))
+            .order_by(Order.created_at.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())

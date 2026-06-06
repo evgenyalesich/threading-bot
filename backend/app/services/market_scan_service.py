@@ -81,6 +81,7 @@ class MarketScanService:
         symbol: str | None = None,
         market_wide: bool = True,
         progress_callback: Callable[[int, int, int, str], Awaitable[None] | None] | None = None,
+        stop_after_limit: bool = False,
     ) -> tuple[list[ScanResultItem], ScanRunStats]:
         pairs = await self._market_service.list_pairs(market)
         universe_pairs = len(pairs)
@@ -214,6 +215,8 @@ class MarketScanService:
                 )
             )
             await self._report_progress(progress_callback, index, total_pairs, len(results), "analysis")
+            if stop_after_limit and len(results) >= limit:
+                break
 
         results.sort(key=lambda item: item.rank, reverse=True)
         limited = results[:limit]
