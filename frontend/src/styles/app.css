@@ -461,6 +461,28 @@
   gap: 8px;
 }
 
+.news-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.news-scope-grid span {
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(8, 14, 24, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.news-scope-grid b {
+  color: var(--text);
+  float: right;
+}
+
 .news-row {
   display: grid;
   gap: 4px;

@@ -70,7 +70,10 @@ class NewsService:
 
     async def context(self, symbol: str | None = None, market: str | None = None) -> dict:
         events = await self.latest(limit=120)
-        relevant = self._relevant_events(events, symbol=symbol, market=market)
+        global_events = events
+        market_events = self._market_events(events, market=market)
+        symbol_events = self._symbol_events(events, symbol=symbol)
+        relevant = self._dedupe_events([*symbol_events, *market_events, *global_events])
         now = datetime.now(UTC)
         before = timedelta(minutes=max(self._settings.news_block_minutes_before, 0))
         after = timedelta(minutes=max(self._settings.news_block_minutes_after, 0))
@@ -89,7 +92,10 @@ class NewsService:
                 "before": self._settings.news_block_minutes_before,
                 "after": self._settings.news_block_minutes_after,
             },
-            "news_events": [event.as_dict() for event in relevant[:20]],
+            "news_events": [event.as_dict() for event in relevant[:30]],
+            "global_events": [event.as_dict() for event in global_events[:30]],
+            "market_events": [event.as_dict() for event in market_events[:30]],
+            "symbol_events": [event.as_dict() for event in symbol_events[:20]],
             "blocking_news": [event.as_dict() for event in blocking[:10]],
         }
 
@@ -172,21 +178,48 @@ class NewsService:
         impact = "high" if score >= 2 else "medium" if score == 1 else "low"
         return score, impact, keywords
 
-    def _relevant_events(self, events: list[NewsEvent], symbol: str | None, market: str | None) -> list[NewsEvent]:
+    def _dedupe_events(self, events: list[NewsEvent]) -> list[NewsEvent]:
+        result: list[NewsEvent] = []
+        seen: set[str] = set()
+        for event in events:
+            key = f"{event.title.lower()}::{event.url or ''}"
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(event)
+        return result
+
+    def _symbol_events(self, events: list[NewsEvent], symbol: str | None) -> list[NewsEvent]:
         normalized_symbol = str(symbol or "").upper().replace("-", "")
         base = normalized_symbol.replace("USDT", "").replace("BUSD", "").replace("USDC", "")
+        if not base:
+            return []
+        aliases = {
+            "BTC": {"btc", "bitcoin"},
+            "ETH": {"eth", "ethereum", "ether"},
+            "BNB": {"bnb", "binance"},
+            "SOL": {"sol", "solana"},
+            "XRP": {"xrp", "ripple"},
+            "DOGE": {"doge", "dogecoin"},
+            "ADA": {"ada", "cardano"},
+        }
+        terms = aliases.get(base, {base.lower()})
+        return [event for event in events if any(term in self._event_text(event) for term in terms)]
+
+    def _market_events(self, events: list[NewsEvent], market: str | None) -> list[NewsEvent]:
         market_text = str(market or "").lower()
-        relevant: list[NewsEvent] = []
-        global_terms = {"fed", "fomc", "cpi", "nfp", "nonfarm", "inflation", "rate", "gdp", "pmi", "ppi"}
-        crypto_terms = {"bitcoin", "btc", "ethereum", "eth", "crypto", "binance", "coinbase", "sec", "etf"}
-        for event in events:
-            text = f"{event.title} {' '.join(event.matched_keywords)}".lower()
-            if any(term in text for term in global_terms):
-                relevant.append(event)
-                continue
-            if market_text in {"spot", "futures"} and any(term in text for term in crypto_terms):
-                relevant.append(event)
-                continue
-            if base and base.lower() in text:
-                relevant.append(event)
-        return relevant
+        macro_terms = {
+            "fed", "fomc", "cpi", "nfp", "nonfarm", "inflation", "rate", "gdp", "pmi", "ppi",
+            "treasury", "yields", "dollar", "tariff", "ecb", "boj", "boe", "powell",
+        }
+        crypto_terms = {
+            "bitcoin", "btc", "ethereum", "eth", "crypto", "stablecoin", "binance", "coinbase",
+            "sec", "etf", "hack", "exploit", "liquidation", "whale", "defi", "solana", "xrp",
+        }
+        terms = set(macro_terms)
+        if market_text in {"spot", "futures", "crypto"}:
+            terms |= crypto_terms
+        return [event for event in events if any(term in self._event_text(event) for term in terms)]
+
+    def _event_text(self, event: NewsEvent) -> str:
+        return f"{event.title} {' '.join(event.matched_keywords)} {event.source}".lower()

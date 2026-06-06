@@ -14,13 +14,20 @@ function formatTime(value) {
 
 export default function NewsGuardPanel({ context, loading, error }) {
   const blocked = Boolean(context?.news_block);
-  const events = context?.blocking_news?.length ? context.blocking_news : context?.news_events || [];
+  const events = context?.blocking_news?.length
+    ? context.blocking_news
+    : context?.market_events?.length
+      ? context.market_events
+      : context?.global_events || context?.news_events || [];
+  const globalCount = context?.global_events?.length || 0;
+  const marketCount = context?.market_events?.length || 0;
+  const symbolCount = context?.symbol_events?.length || 0;
   return (
     <section className={`news-guard-panel ${blocked ? "blocked" : "clear"}`}>
       <div className="panel-title-row">
         <div>
           <div className="panel-title">News Guard</div>
-          <div className="journal-subtitle">Layer 0: NFP / CPI / FOMC / crypto risk</div>
+          <div className="journal-subtitle">Global macro + crypto news risk</div>
         </div>
         <span className={`news-guard-badge ${blocked ? "blocked" : "clear"}`}>
           {loading ? "CHECK" : blocked ? "BLOCK" : "CLEAR"}
@@ -28,10 +35,15 @@ export default function NewsGuardPanel({ context, loading, error }) {
       </div>
       {error ? <div className="dom-error">{error}</div> : null}
       {blocked ? (
-        <div className="news-warning">Важная новость рядом. Стратегия молчит до выхода из risk-window.</div>
+        <div className="news-warning">Глобальная важная фин/крипто новость рядом. Стратегия молчит до выхода из risk-window.</div>
       ) : (
-        <div className="news-ok">Критических новостей в текущем окне нет.</div>
+        <div className="news-ok">Критических macro/crypto новостей в текущем окне нет.</div>
       )}
+      <div className="news-scope-grid">
+        <span>Global <b>{globalCount}</b></span>
+        <span>Market <b>{marketCount}</b></span>
+        <span>Symbol <b>{symbolCount}</b></span>
+      </div>
       <div className="news-list">
         {events.slice(0, 4).map((item, index) => (
           <a className="news-row" href={item.url || "#"} target="_blank" rel="noreferrer" key={`${item.title}-${index}`}>

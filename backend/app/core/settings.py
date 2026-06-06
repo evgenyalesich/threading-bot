@@ -94,6 +94,8 @@ class Settings(BaseSettings):
             "https://www.investing.com/rss/news_25.rss,"
             "https://www.investing.com/rss/news_1.rss,"
             "https://www.fxstreet.com/rss/news,"
+            "https://feeds.marketwatch.com/marketwatch/topstories,"
+            "https://www.cnbc.com/id/100003114/device/rss/rss.html,"
             "https://cointelegraph.com/rss,"
             "https://www.coindesk.com/arc/outboundfeeds/rss/"
         ),
@@ -106,7 +108,9 @@ class Settings(BaseSettings):
         default=(
             "nfp,nonfarm,cpi,inflation,fomc,fed,powell,rate decision,interest rate,"
             "ecb,lagarde,boe,boj,gdp,pmi,ppi,unemployment,jobless,retail sales,"
-            "war,sanction,sec,etf,hack,exploit,binance,coinbase"
+            "war,sanction,sec,etf,hack,exploit,binance,coinbase,bitcoin,ethereum,"
+            "crypto,stablecoin,liquidation,liquidations,whale,crash,collapse,bankruptcy,"
+            "lawsuit,approval,rejection,spot etf,tariff,treasury,yields,dollar"
         ),
         validation_alias="NEWS_HIGH_IMPACT_KEYWORDS",
     )
