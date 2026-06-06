@@ -75,9 +75,10 @@ class ExecutionService:
         if resolved_market == "futures" and order_create.leverage and hasattr(self._exchange, "set_leverage"):
             try:
                 await self._exchange.set_leverage(resolved_symbol, int(order_create.leverage))
-            except Exception:
-                # Leverage change can fail due to exchange settings; do not block order placement.
-                pass
+            except Exception as exc:
+                stored.status = "rejected"
+                stored.reject_reason = f"set_leverage_failed: {str(exc)[:450]}"
+                return await self._order_repository.add(stored)
 
         payload = {
             "market": resolved_market,

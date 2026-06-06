@@ -16,9 +16,9 @@ class PivotPoint:
 class ChartPatternService:
     def __init__(
         self,
-        pivot_window: int = 5,
-        slope_tolerance: float = 0.00008,
-        level_tolerance: float = 0.008,
+        pivot_window: int = 4,
+        slope_tolerance: float = 0.00012,
+        level_tolerance: float = 0.01,
     ) -> None:
         self._pivot_window = pivot_window
         self._slope_tolerance = slope_tolerance

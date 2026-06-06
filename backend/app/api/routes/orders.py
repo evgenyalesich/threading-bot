@@ -15,10 +15,20 @@ from app.services.binance_market_service import BinanceMarketService
 from app.services.binance_credentials import resolve_api_credentials
 from app.services.execution_service import ExecutionService
 from app.services.order_sizing_service import OrderSizingService
+from app.services.order_sync_service import OrderSyncService
+from app.services.telegram_service import TelegramService
 
 
 router = APIRouter()
 settings = Settings()
+
+
+async def _sync_if_flat(
+    order,
+    order_repo: OrderRepository,
+):
+    service = OrderSyncService(order_repo, settings)
+    return await service.sync_one(order)
 
 
 def _to_float(value) -> float | None:
@@ -190,6 +200,13 @@ async def create_order(
 
     service = ExecutionService(order_repo, exchange)
     order = await service.place_order(payload, market=market)
+    try:
+        await TelegramService(settings).send_message(
+            f"Order {order.side} {order.symbol} {order.market}\n"
+            f"Status: {order.status}\nEntry: {order.price}\nSL: {order.stop_loss}\nTP: {order.take_profit}"
+        )
+    except Exception:
+        pass
     return OrderRead.model_validate(order)
 
 
@@ -284,6 +301,12 @@ async def close_order_position(
                 )
                 return OrderRead.model_validate(updated)
         updated = await order_repo.update(order, {"status": "close_failed", "reject_reason": message[:500]})
+    try:
+        await TelegramService(settings).send_message(
+            f"Order closed {updated.symbol}\nStatus: {updated.status}\nExit: {updated.exit_price}\nPnL: {updated.realized_pnl}"
+        )
+    except Exception:
+        pass
     return OrderRead.model_validate(updated)
 
 
@@ -311,6 +334,9 @@ async def move_to_breakeven(
 
     exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
     if exchange:
+        order = await _sync_if_flat(order, order_repo)
+        if order.status == "closed":
+            return OrderRead.model_validate(order)
         try:
             if order.market == "spot":
                 if order.oco_order_id:
@@ -347,7 +373,7 @@ async def move_to_breakeven(
                     quantity=order.quantity,
                     stop_price=entry_price,
                     reduce_only=True,
-                    close_position=False,
+                    close_position=True,
                 )
                 order.stop_order_id = str(stop_order.get("orderId") or "")
         except Exception as exc:
@@ -394,6 +420,9 @@ async def move_stop(
 
     exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
     if exchange:
+        order = await _sync_if_flat(order, order_repo)
+        if order.status == "closed":
+            return OrderRead.model_validate(order)
         try:
             if order.market == "spot":
                 if order.oco_order_id:
@@ -430,7 +459,7 @@ async def move_stop(
                     quantity=order.quantity,
                     stop_price=stop_price,
                     reduce_only=True,
-                    close_position=False,
+                    close_position=True,
                 )
                 order.stop_order_id = str(stop_order.get("orderId") or "")
         except Exception as exc:
@@ -476,6 +505,9 @@ async def move_take(
 
     exit_side = "SELL" if order.side.upper() == "BUY" else "BUY"
     if exchange:
+        order = await _sync_if_flat(order, order_repo)
+        if order.status == "closed":
+            return OrderRead.model_validate(order)
         try:
             if order.market == "spot":
                 if order.oco_order_id:
@@ -511,7 +543,7 @@ async def move_take(
                     quantity=order.quantity,
                     take_profit=take_price,
                     reduce_only=True,
-                    close_position=False,
+                    close_position=True,
                 )
                 order.take_order_id = str(take_order.get("orderId") or "")
         except Exception as exc:
@@ -533,4 +565,5 @@ async def list_orders(
 ) -> list[OrderRead]:
     order_repo = OrderRepository(session)
     orders = await order_repo.list_recent(limit=limit)
+    orders = await OrderSyncService(order_repo, settings).sync_recent(orders)
     return [OrderRead.model_validate(order) for order in orders]

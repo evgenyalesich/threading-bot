@@ -6,9 +6,11 @@ from datetime import datetime, timedelta, UTC
 import pandas as pd
 import pytest
 
-from app.services.backtest_service import BacktestService
+from app.services.backtest_service import BacktestService, BacktestTrade
+from app.strategies.adaptive_pattern_confluence_strategy import AdaptivePatternConfluenceStrategy
 from app.services.divergence_service import DivergenceService
 from app.services.fibonacci_service import FibonacciService
+from app.services.order_sizing_service import OrderSizingService
 from app.services.support_resistance_service import SupportResistanceService
 from app.strategies.ema200_fib_divergence_strategy import Ema200FibDivergenceStrategy
 from app.strategies.strategy_filters import StrategyFilters
@@ -27,6 +29,34 @@ def _make_ohlcv(closes: list[float]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+class _MarketStub:
+    async def list_pairs(self, market: str) -> list[dict]:
+        return [
+            {
+                "symbol": "TESTUSDT",
+                "step_size": 0.1,
+                "min_qty": 1.0,
+                "max_qty": 100000.0,
+                "min_notional": 5.0,
+                "tick_size": 0.01,
+            }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_order_sizing_raises_quantity_to_pair_minimum() -> None:
+    result = await OrderSizingService(_MarketStub()).size_order(
+        "TESTUSDT",
+        "futures",
+        quote_amount=0.1,
+        price=2.0,
+        leverage=25,
+    )
+
+    assert result.error is None
+    assert result.quantity == 2.5
 
 
 def test_divergence_detects_recent_extrema_without_5_bar_delay() -> None:
@@ -150,6 +180,145 @@ class _TradePlanStub:
         )
 
 
+class _AdaptiveIndicatorStub:
+    def __init__(
+        self,
+        ema26_value: float,
+        ema200_value: float,
+        atr_value: float = 1.0,
+        ema26_prev_value: float | None = None,
+    ) -> None:
+        self._ema26_value = ema26_value
+        self._ema200_value = ema200_value
+        self._atr_value = atr_value
+        self._ema26_prev_value = ema26_prev_value if ema26_prev_value is not None else ema26_value
+
+    def ema(self, close: pd.Series, period: int) -> pd.Series:
+        if period == 26:
+            values = [self._ema26_prev_value] * len(close)
+            if len(values) >= 4:
+                values[-4:] = [self._ema26_value] * 4
+            return pd.Series(values)
+        return pd.Series([self._ema200_value] * len(close))
+
+    def rsi(self, close: pd.Series, period: int = 14) -> pd.Series:
+        return pd.Series([55.0] * len(close))
+
+    def atr(self, high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+        return pd.Series([self._atr_value] * len(close))
+
+    def stochastic(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        k_period: int = 5,
+        d_period: int = 3,
+        smooth_k: int = 3,
+    ) -> tuple[pd.Series, pd.Series]:
+        return pd.Series([42.0] * len(close)), pd.Series([40.0] * len(close))
+
+
+class _AdaptivePatternServiceStub:
+    def scan_latest(self, data: pd.DataFrame) -> list[dict]:
+        return [{"name": "bullish_engulfing", "signal": 1}]
+
+
+class _AdaptiveChartPatternStub:
+    def __init__(self, confirmed: bool = True) -> None:
+        self._confirmed = confirmed
+
+    def detect(self, data: pd.DataFrame) -> list[dict]:
+        last_index = len(data) - 1
+        entry = float(data["close"].iloc[-1])
+        breakout = entry * 0.998
+        stop = entry * 0.99
+        line = {
+            "role": "upper",
+            "style": 2,
+            "color": "#38bdf8",
+            "points": [
+                {"index": max(0, last_index - 20), "price": breakout},
+                {"index": last_index, "price": breakout * 1.002},
+            ],
+        }
+        return [
+            {
+                "name": "ascending_triangle",
+                "direction": "long",
+                "confidence": 0.82,
+                "breakout": breakout,
+                "target": entry * 1.05,
+                "stop_level": stop,
+                "confirmed": self._confirmed,
+                "index": last_index,
+                "lines": [line],
+            }
+        ]
+
+
+class _AdaptiveDivergenceStub:
+    def __init__(self, bullish: bool = True) -> None:
+        self._bullish = bullish
+
+    def detect(self, data: pd.DataFrame, oscillator: pd.Series) -> dict[str, bool]:
+        return {"bullish": self._bullish, "bearish": not self._bullish}
+
+
+class _AdaptiveSRStub:
+    def levels(self, data: pd.DataFrame) -> list[float]:
+        entry = float(data["close"].iloc[-1])
+        return [entry * 0.992, entry * 1.004, entry * 1.012]
+
+
+class _AdaptiveFibStub:
+    def levels(self, data: pd.DataFrame) -> dict[str, float]:
+        entry = float(data["close"].iloc[-1])
+        return {
+            "0.236": entry * 0.996,
+            "0.382": entry * 0.998,
+            "0.5": entry * 1.001,
+            "0.618": entry * 1.003,
+            "0.786": entry * 1.005,
+            "1.0": entry * 0.99,
+        }
+
+
+class _AdaptiveElliottStub:
+    def analyze(self, data: pd.DataFrame) -> list[dict]:
+        return []
+
+
+def _build_adaptive_strategy(
+    confirmed: bool = True,
+    bullish_divergence: bool = True,
+    ema26_value: float = 102.0,
+    ema26_prev_value: float = 100.5,
+    ema200_value: float = 101.5,
+) -> AdaptivePatternConfluenceStrategy:
+    return AdaptivePatternConfluenceStrategy(
+        indicator_service=_AdaptiveIndicatorStub(
+            ema26_value=ema26_value,
+            ema200_value=ema200_value,
+            atr_value=1.0,
+            ema26_prev_value=ema26_prev_value,
+        ),
+        pattern_service=_AdaptivePatternServiceStub(),
+        chart_pattern_service=_AdaptiveChartPatternStub(confirmed=confirmed),
+        divergence_service=_AdaptiveDivergenceStub(bullish=bullish_divergence),
+        support_resistance_service=_AdaptiveSRStub(),
+        fibonacci_service=_AdaptiveFibStub(),
+        elliott_wave_service=_AdaptiveElliottStub(),
+        trade_plan_service=_TradePlanStub(),
+        filters=StrategyFilters(
+            min_confidence=0.35,
+            min_confirmations=2,
+            allow_candidate_patterns=True,
+            quality_mode="balanced",
+        ),
+    )
+
+
 def _build_strategy(fib_levels: dict[str, float], ema_value: float = 100.0) -> Ema200FibDivergenceStrategy:
     return Ema200FibDivergenceStrategy(
         indicator_service=_IndicatorStub(ema_value=ema_value),
@@ -239,6 +408,79 @@ def test_strategy_allows_only_1h_or_4h_for_position_mode() -> None:
     assert signal_15m is None
 
 
+def test_adaptive_strategy_uses_confirmed_pattern_and_confluence() -> None:
+    prices = [100.0 + i * 0.02 for i in range(220)]
+    data = _make_ohlcv(prices)
+    strategy = _build_adaptive_strategy(confirmed=True, bullish_divergence=True)
+
+    payload = strategy.evaluate(data, {"timeframe": "1h", "trend_data": data})
+
+    assert payload is not None
+    assert payload["signal_type"] == "long"
+    assert payload["meta"]["setup"]["state"] == "confirmed"
+    assert payload["meta"]["chart_pattern"]["name"] == "ascending_triangle"
+    assert payload["meta"]["trade_plan"]["take_levels"]
+
+
+def test_adaptive_strategy_allows_candidate_pattern_when_confluence_is_strong() -> None:
+    prices = [100.0 + i * 0.02 for i in range(220)]
+    data = _make_ohlcv(prices)
+    strategy = _build_adaptive_strategy(confirmed=False, bullish_divergence=True)
+
+    payload = strategy.evaluate(data, {"timeframe": "1h", "trend_data": data})
+
+    assert payload is not None
+    assert payload["signal_type"] == "long"
+    assert payload["meta"]["setup"]["state"] == "candidate"
+    assert payload["confidence"] >= 0.35
+
+
+def test_adaptive_strategy_blocks_candidate_pattern_in_sniper_mode() -> None:
+    prices = [100.0 + i * 0.02 for i in range(220)]
+    data = _make_ohlcv(prices)
+    strategy = AdaptivePatternConfluenceStrategy(
+        indicator_service=_AdaptiveIndicatorStub(
+            ema26_value=102.0,
+            ema200_value=101.5,
+            atr_value=1.0,
+            ema26_prev_value=100.5,
+        ),
+        pattern_service=_AdaptivePatternServiceStub(),
+        chart_pattern_service=_AdaptiveChartPatternStub(confirmed=False),
+        divergence_service=_AdaptiveDivergenceStub(bullish=True),
+        support_resistance_service=_AdaptiveSRStub(),
+        fibonacci_service=_AdaptiveFibStub(),
+        elliott_wave_service=_AdaptiveElliottStub(),
+        trade_plan_service=_TradePlanStub(),
+        filters=StrategyFilters(
+            min_confidence=0.35,
+            min_confirmations=2,
+            allow_candidate_patterns=False,
+            quality_mode="sniper",
+        ),
+    )
+
+    payload = strategy.evaluate(data, {"timeframe": "1h", "trend_data": data})
+
+    assert payload is None
+
+
+def test_adaptive_strategy_blocks_long_against_higher_timeframe_trend() -> None:
+    prices = [100.0 + i * 0.02 for i in range(220)]
+    data = _make_ohlcv(prices)
+    strategy = _build_adaptive_strategy(
+        confirmed=True,
+        bullish_divergence=True,
+        ema26_value=99.5,
+        ema26_prev_value=101.5,
+        ema200_value=105.0,
+    )
+
+    payload = strategy.evaluate(data, {"timeframe": "1h", "trend_data": data})
+
+    assert payload is None
+
+
 @dataclass
 class _Candle:
     open: float
@@ -308,3 +550,27 @@ def test_backtest_exits_on_opposite_signal() -> None:
 
     assert trade is not None
     assert trade.exit_reason == "OPPOSITE_SIGNAL"
+
+
+def test_backtest_drawdown_is_capped_when_trade_return_explodes() -> None:
+    service = BacktestService(candle_repository=_RepoStub(), strategy=_OppositeSignalStrategy())
+    trades = [
+        BacktestTrade(
+            id=1,
+            symbol="BTCUSDT",
+            timeframe="1h",
+            side="long",
+            entry=100.0,
+            entry_time=0,
+            exit_price=50.0,
+            exit_time=3600,
+            exit_reason="SL",
+            pnl=-5000.0,
+            trade_plan={"stop_loss": 99.9},
+        )
+    ]
+
+    stats = service._stats(trades, initial_equity=10_000.0, risk_per_trade=0.01)
+
+    assert stats.max_drawdown_pct <= 100.0
+    assert stats.ending_equity >= 0.0

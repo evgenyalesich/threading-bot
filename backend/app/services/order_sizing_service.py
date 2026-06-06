@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 from app.services.binance_market_service import BinanceMarketService
 
@@ -45,22 +45,23 @@ class OrderSizingService:
         safe_leverage = max(int(leverage or 1), 1) if market == "futures" else 1
         notional_amount = quote_amount * safe_leverage
 
-        # Check the actual Binance position notional against exchange limits.
-        if min_notional and notional_amount < min_notional:
-            return SizingResult(quantity=None, price=price, error="min_notional")
-
-        raw_qty = notional_amount / price
+        # Every symbol has its own minQty/minNotional. In auto-sizing mode,
+        # raise the position to the smallest exchange-valid size instead of
+        # rejecting an otherwise valid signal.
+        minimum_notional = max(min_notional, min_qty * price)
+        target_notional = max(notional_amount, minimum_notional)
+        raw_qty = target_notional / price
         sized_qty = raw_qty
 
         if step_size > 0:
-            sized_qty = self._floor_to_step(raw_qty, step_size)
+            sized_qty = self._ceil_to_step(raw_qty, step_size)
 
         if min_qty and sized_qty < min_qty:
-            return SizingResult(quantity=None, price=price, error="min_qty")
+            sized_qty = self._ceil_to_step(min_qty, step_size) if step_size > 0 else min_qty
         if max_qty and sized_qty > max_qty:
-            sized_qty = max_qty
+            return SizingResult(quantity=None, price=price, error="max_qty")
         if min_notional and sized_qty * price < min_notional:
-            return SizingResult(quantity=None, price=price, error="min_notional")
+            sized_qty = self._ceil_to_step(min_notional / price, step_size) if step_size > 0 else min_notional / price
         if sized_qty <= 0:
             return SizingResult(quantity=None, price=price, error="qty_too_small")
         tick_size = float(pair.get("tick_size") or 0)
@@ -99,3 +100,11 @@ class OrderSizingService:
         units = (value_dec / step_dec).to_integral_value(rounding=ROUND_DOWN)
         sized = units * step_dec
         return float(sized)
+
+    def _ceil_to_step(self, value: float, step: float) -> float:
+        step_dec = Decimal(str(step))
+        value_dec = Decimal(str(value))
+        if step_dec == 0:
+            return float(value_dec)
+        units = (value_dec / step_dec).to_integral_value(rounding=ROUND_UP)
+        return float(units * step_dec)

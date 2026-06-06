@@ -35,6 +35,11 @@ function ConfidenceBar({ value }) {
 export default function ScanResultsPanel({
   results,
   running,
+  mode,
+  processedPairs,
+  universePairs,
+  selectedSymbol,
+  diagnostics,
   limit,
   maxPairs,
   minVolatility,
@@ -57,15 +62,81 @@ export default function ScanResultsPanel({
   onRequireVolumeConfirmChange,
   onAutoSyncChange,
   onOnlyNewSignalsMinutesChange,
+  onModeChange,
   onRunScan,
   onSelectResult,
 }) {
   const longResults = results.filter((r) => r.signal.signal_type === "long");
   const shortResults = results.filter((r) => r.signal.signal_type === "short");
+  const topReasons = Object.entries(diagnostics?.reason_counts || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
 
   return (
     <div className="scan-panel">
-      <div className="panel-title">Сканер рынка</div>
+      <div className="panel-title-row">
+        <div>
+          <div className="panel-title">Сканер рынка</div>
+          <div className="journal-subtitle">
+            {mode === "single" ? `Single Pair · ${selectedSymbol || "--"}` : "Market-Wide · весь отфильтрованный рынок"}
+          </div>
+        </div>
+        <div className="segmented-toggle compact">
+          <button
+            type="button"
+            className={mode === "single" ? "active" : ""}
+            onClick={() => onModeChange("single")}
+          >
+            Single Pair
+          </button>
+          <button
+            type="button"
+            className={mode === "market" ? "active" : ""}
+            onClick={() => onModeChange("market")}
+          >
+            Market-Wide
+          </button>
+        </div>
+      </div>
+      <div className="workspace-summary-grid">
+        <div className="workspace-summary-card">
+          <span>Обработано пар</span>
+          <strong>{processedPairs ?? 0}</strong>
+          <small>из universe {universePairs ?? 0}</small>
+        </div>
+        <div className="workspace-summary-card">
+          <span>Лимит сигналов</span>
+          <strong>{limit}</strong>
+          <small>макс. пар {mode === "market" ? maxPairs : 1}</small>
+        </div>
+      </div>
+      {diagnostics ? (
+        <div className="scan-diagnostics">
+          <div className="signals-title">Диагностика сканера</div>
+          <div className="workspace-summary-grid">
+            <div className="workspace-summary-card">
+              <span>Всего пар</span>
+              <strong>{diagnostics.total_pairs ?? 0}</strong>
+              <small>после quote/volatility: {diagnostics.eligible_pairs ?? 0}</small>
+            </div>
+            <div className="workspace-summary-card">
+              <span>Сигналы</span>
+              <strong>{diagnostics.matched_signals ?? 0}</strong>
+              <small>обработано пар: {diagnostics.processed_pairs ?? 0}</small>
+            </div>
+          </div>
+          <div className="diagnostic-reason-list">
+            {topReasons.length ? topReasons.map(([reason, count]) => (
+              <div key={reason} className="diagnostic-reason-pill">
+                <strong>{reason}</strong>
+                <span>{count}</span>
+              </div>
+            )) : (
+              <div className="empty-state">Причины отсечения пока не собраны.</div>
+            )}
+          </div>
+        </div>
+      ) : null}
       <div className="scan-controls">
         <div className="control-group">
           <label>Макс. пар</label>

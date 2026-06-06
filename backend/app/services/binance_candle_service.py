@@ -12,7 +12,8 @@ class BinanceCandleService:
         self._settings = settings
 
     def _rest_bases(self, market: str) -> list[str]:
-        # Prefer real endpoints for better history coverage; fallback to testnet when needed.
+        # In testnet mode prefer testnet first so automation keeps working even when
+        # the real futures REST API is region-blocked (for example HTTP 418).
         market = market.lower()
         if market == "futures":
             real_base = self._settings.binance_rest_futures_url.rstrip("/")
@@ -21,7 +22,7 @@ class BinanceCandleService:
             real_base = self._settings.binance_rest_spot_url.rstrip("/")
             test_base = self._settings.binance_rest_spot_testnet_url.rstrip("/")
         if self._settings.binance_testnet:
-            return [real_base, test_base]
+            return [test_base, real_base]
         return [real_base]
 
     def _klines_path(self, market: str) -> str:

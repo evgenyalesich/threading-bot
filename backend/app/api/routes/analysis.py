@@ -4,46 +4,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db_session
 from app.core.settings import Settings
 from app.repositories.candle_repository import CandleRepository
-from app.repositories.order_repository import OrderRepository
 from app.repositories.signal_repository import SignalRepository
 from app.repositories.symbol_mapping_repository import SymbolMappingRepository
 from app.schemas.analysis_explain_request import AnalysisExplainRequest
 from app.schemas.analysis_explain_response import AnalysisExplainResponse
 from app.schemas.analysis_request import AnalysisRequest
 from app.schemas.analysis_response import AnalysisResponse
+from app.schemas.backtest_progress import BacktestProgressRead
 from app.schemas.backtest_request import BacktestRequest
 from app.schemas.backtest_response import BacktestResponse, BacktestStatsRead, BacktestTradeRead
 from app.schemas.backfill_request import BackfillRequest
 from app.schemas.backfill_response import BackfillResponse
-from app.schemas.order_create import OrderCreate
 from app.schemas.order_read import OrderRead
 from app.schemas.scan_request import ScanRequest
-from app.schemas.scan_response import ScanResponse, ScanSignalItem
+from app.schemas.scan_response import ScanDiagnosticsRead, ScanResponse, ScanSignalItem
 from app.schemas.signal_read import SignalRead
-from app.exchanges.binance_exchange import BinanceExchange
 from app.services.binance_candle_service import BinanceCandleService
 from app.services.binance_market_service import BinanceMarketService
 from app.services.market_data_service import MarketDataService
 from app.services.backtest_service import BacktestService
-from app.services.execution_service import ExecutionService
+from app.services.backtest_runtime import get_backtest_runtime
 from app.services.market_scan_service import MarketScanService
-from app.services.order_sizing_service import OrderSizingService
 from app.services.indicator_service import IndicatorService
 from app.services.signal_service import SignalService
 from app.services.symbol_resolver_service import SymbolResolverService
 from app.services.signal_backfill_service import SignalBackfillService
-from app.services.binance_credentials import resolve_api_credentials
 from app.services.pattern_service import PatternService
 from app.services.chart_pattern_service import ChartPatternService
 from app.services.divergence_service import DivergenceService
 from app.services.support_resistance_service import SupportResistanceService
 from app.services.fibonacci_service import FibonacciService
 from app.services.elliott_wave_service import ElliottWaveService
-from app.services.risk_service import RiskService
 from app.services.trade_plan_service import TradePlanService
-from app.strategies.three_screens_strategy import ThreeScreensStrategy
-from app.strategies.ema200_fib_divergence_strategy import Ema200FibDivergenceStrategy
-from app.strategies.swing_60pip_strategy import Swing60PipStrategy
+from app.services.signal_execution_service import SignalExecutionConfig, SignalExecutionService
+from app.services.telegram_service import TelegramService
+from app.strategies.adaptive_pattern_confluence_strategy import AdaptivePatternConfluenceStrategy
 from app.strategies.base_strategy import BaseStrategy
 from app.strategies.strategy_filters import StrategyFilters
 from app.utils.candle_frame import candles_to_df
@@ -73,24 +68,15 @@ def _strategy_filters_from_payload(payload) -> StrategyFilters:
         require_divergence=bool(getattr(payload, "require_divergence", False)),
         require_candle=bool(getattr(payload, "require_candle", False)),
         require_volume_confirm=bool(getattr(payload, "require_volume_confirm", False)),
+        min_trend_strength=float(getattr(payload, "min_trend_strength", defaults.min_trend_strength)),
+        min_reward_risk=float(getattr(payload, "min_reward_risk", defaults.min_reward_risk)),
+        allow_candidate_patterns=bool(getattr(payload, "allow_candidate_patterns", defaults.allow_candidate_patterns)),
+        quality_mode=str(getattr(payload, "quality_mode", defaults.quality_mode)),
     )
 
 
-def _build_three_screens_strategy(
-    filters: StrategyFilters,
-    h1_timeframe: str = "1h",
-    trend_timeframe: str | None = None,
-) -> ThreeScreensStrategy:
-    return ThreeScreensStrategy(
-        indicator_service=IndicatorService(),
-        trend_timeframe=trend_timeframe or "4h",
-        h1_timeframe=h1_timeframe,
-        filters=filters,
-    )
-
-
-def _build_ema200_fib_divergence_strategy(filters: StrategyFilters) -> Ema200FibDivergenceStrategy:
-    return Ema200FibDivergenceStrategy(
+def _build_adaptive_pattern_confluence_strategy(filters: StrategyFilters) -> AdaptivePatternConfluenceStrategy:
+    return AdaptivePatternConfluenceStrategy(
         indicator_service=IndicatorService(),
         pattern_service=PatternService(),
         chart_pattern_service=ChartPatternService(),
@@ -98,41 +84,21 @@ def _build_ema200_fib_divergence_strategy(filters: StrategyFilters) -> Ema200Fib
         support_resistance_service=SupportResistanceService(),
         fibonacci_service=FibonacciService(),
         elliott_wave_service=ElliottWaveService(),
-        risk_service=RiskService(),
         trade_plan_service=TradePlanService(),
-        filters=filters,
-    )
-
-
-def _build_swing_60pip_strategy(
-    filters: StrategyFilters,
-    h1_timeframe: str = "1h",
-    trend_timeframe: str | None = None,
-) -> Swing60PipStrategy:
-    return Swing60PipStrategy(
-        indicator_service=IndicatorService(),
-        trend_timeframe=trend_timeframe or "4h",
-        h1_timeframe=h1_timeframe,
         filters=filters,
     )
 
 
 def _build_strategy_from_payload(payload) -> BaseStrategy:
     filters = _strategy_filters_from_payload(payload)
-    strategy_name = (getattr(payload, "strategy", "three_screens") or "three_screens").lower().strip()
-    if strategy_name == "ema200_fib_divergence":
-        return _build_ema200_fib_divergence_strategy(filters)
-    if strategy_name == "swing_60pip":
-        return _build_swing_60pip_strategy(
-            filters,
-            h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
-            trend_timeframe=getattr(payload, "trend_timeframe", None),
-        )
-    return _build_three_screens_strategy(
-        filters,
-        h1_timeframe=getattr(payload, "h1_timeframe", "1h"),
-        trend_timeframe=getattr(payload, "trend_timeframe", None),
-    )
+    # Keep legacy strategy names as aliases, but route everything through the single
+    # main production strategy so the app stays focused and predictable.
+    return _build_adaptive_pattern_confluence_strategy(filters)
+
+
+@router.get("/backtest-status")
+async def get_backtest_status() -> BacktestProgressRead:
+    return get_backtest_runtime().snapshot()
 
 
 @router.post("/run")
@@ -153,84 +119,37 @@ async def run_analysis(
         return AnalysisResponse(status="no_signal")
 
     signal_read = SignalRead.model_validate(signal)
+    try:
+        await TelegramService(settings).send_message(
+            f"Signal {signal.signal_type.upper()} {signal.symbol} {signal.timeframe}\n"
+            f"Entry: {signal.entry_price}\nSL: {signal.stop_loss}\nTP: {signal.take_profit}\n"
+            f"Conf: {round(float(signal.confidence or 0) * 100)}%"
+        )
+    except Exception:
+        pass
     if not payload.auto_execute:
         return AnalysisResponse(status="signal", signal=signal_read)
 
-    market = payload.market.lower()
-    trade_env = payload.trade_env.lower()
-    trade_settings = settings.model_copy(update={"binance_testnet": trade_env == "testnet"})
-    if market == "spot" and signal.signal_type == "short":
-        return AnalysisResponse(status="spot_short_not_supported", signal=signal_read)
-
-    mapping_repo = SymbolMappingRepository(session)
-    resolver = SymbolResolverService(mapping_repo)
-    resolved_symbol = await resolver.resolve(symbol, market)
-    if not resolved_symbol:
-        return AnalysisResponse(status="symbol_not_mapped", signal=signal_read)
-
-    quantity = payload.quantity if payload.quantity > 0 else settings.default_order_quantity
-    if payload.auto_quantity or payload.quote_amount is not None:
-        if payload.quote_amount is None:
-            return AnalysisResponse(
-                status="order_sizing_error",
-                signal=signal_read,
-                error="quote_amount_required",
-            )
-        sizing_service = OrderSizingService(BinanceMarketService(trade_settings))
-        sizing = await sizing_service.size_order(
-            resolved_symbol,
-            market,
-            payload.quote_amount,
-            signal.entry_price,
+    result = await SignalExecutionService(settings).execute(
+        session,
+        signal,
+        SignalExecutionConfig(
+            symbol=symbol,
+            timeframe=payload.timeframe,
+            market=payload.market,
+            trade_env=payload.trade_env,
+            order_type=payload.order_type,
+            quantity=payload.quantity,
+            quote_amount=payload.quote_amount,
+            auto_quantity=payload.auto_quantity,
+            attach_orders=payload.attach_orders,
+            auto_breakeven=payload.auto_breakeven,
             leverage=payload.leverage,
-        )
-        if sizing.error:
-            return AnalysisResponse(status="order_sizing_error", signal=signal_read, error=sizing.error)
-        quantity = sizing.quantity or quantity
-        normalized_price = sizing.price or signal.entry_price
-    else:
-        normalized = await OrderSizingService(BinanceMarketService(trade_settings)).normalize_order(
-            resolved_symbol,
-            market,
-            quantity,
-            signal.entry_price,
-        )
-        if normalized.error:
-            return AnalysisResponse(status="order_sizing_error", signal=signal_read, error=normalized.error)
-        quantity = normalized.quantity or quantity
-        normalized_price = normalized.price or signal.entry_price
-
-    order_repo = OrderRepository(session)
-    exchange = None
-    api_key, api_secret, _ = resolve_api_credentials(settings, trade_env, market)
-    if api_key and api_secret:
-        exchange = BinanceExchange(trade_settings)
-    execution_service = ExecutionService(order_repo, exchange)
-    trade_plan = signal.meta.get("trade_plan") if signal.meta else None
-    order_create = OrderCreate(
-        exchange="binance",
-        market=market,
-        symbol=resolved_symbol,
-        side="BUY" if signal.signal_type == "long" else "SELL",
-        order_type=payload.order_type,
-        quantity=quantity,
-        trade_env=payload.trade_env,
-        quote_amount=payload.quote_amount,
-        auto_quantity=payload.auto_quantity,
-        timeframe=payload.timeframe,
-        signal_id=signal.id,
-        price=normalized_price,
-        leverage=payload.leverage,
-        stop_loss=(trade_plan.get("stop_loss") if trade_plan else signal.stop_loss),
-        take_profit=(trade_plan.get("take_profit") if trade_plan else signal.take_profit),
-        take_levels=(trade_plan.get("take_levels") if trade_plan else None),
-        breakeven_at=(trade_plan.get("breakeven_at") if trade_plan else None),
-        auto_breakeven=payload.auto_breakeven,
-        attach_orders=payload.attach_orders,
+        ),
     )
-    order = await execution_service.place_order(order_create, market=market)
-    status = "order_submitted" if order.status == "submitted" else "order_stored"
-    return AnalysisResponse(status=status, signal=signal_read, order=OrderRead.model_validate(order))
+    if result.order is None:
+        return AnalysisResponse(status=result.status, signal=signal_read, error=result.error)
+    return AnalysisResponse(status=result.status, signal=signal_read, order=OrderRead.model_validate(result.order))
 
 
 @router.post("/backfill")
@@ -277,7 +196,7 @@ async def scan_market(
     )
 
     lookback = payload.lookback_days * _candles_per_day(payload.timeframe)
-    results = await scan_service.scan(
+    results, scan_stats = await scan_service.scan(
         market=payload.market.lower(),
         timeframe=payload.timeframe,
         lookback=lookback,
@@ -289,6 +208,8 @@ async def scan_market(
         auto_sync=payload.auto_sync,
         store_signals=payload.store_signals,
         only_new_signals_minutes=max(int(payload.only_new_signals_minutes or 0), 0),
+        symbol=payload.symbol.upper() if payload.symbol else None,
+        market_wide=payload.market_wide,
     )
 
     response_items = [
@@ -309,9 +230,20 @@ async def scan_market(
     new_signals_count = sum(1 for item in results if getattr(item, "is_new", False))
     return ScanResponse(
         status="ok",
+        mode=scan_stats.mode,
+        selected_symbol=scan_stats.selected_symbol,
+        processed_pairs=scan_stats.processed_pairs,
+        universe_pairs=scan_stats.universe_pairs,
         scanned=len(results),
         new_signals_count=new_signals_count,
         has_new_signals=new_signals_count > 0,
+        diagnostics=ScanDiagnosticsRead(
+            total_pairs=scan_stats.universe_pairs,
+            eligible_pairs=scan_stats.eligible_pairs,
+            processed_pairs=scan_stats.processed_pairs,
+            matched_signals=scan_stats.matched_signals,
+            reason_counts=scan_stats.reason_counts,
+        ),
         signals=response_items,
     )
 
@@ -321,64 +253,111 @@ async def backtest_strategy(
     payload: BacktestRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> BacktestResponse:
+    runtime = get_backtest_runtime()
     candle_repo = CandleRepository(session)
     market = payload.market.lower()
     data_env = payload.data_env.lower()
     effective_settings = settings.model_copy(update={"binance_testnet": data_env == "testnet"})
+    strategy = _build_strategy_from_payload(payload)
 
-    if payload.auto_sync:
-        binance_symbol = payload.symbol.upper()
-        mapping_repo = SymbolMappingRepository(session)
-        resolver = SymbolResolverService(mapping_repo)
-        resolved = await resolver.resolve(payload.symbol.upper(), market)
-        if resolved:
-            binance_symbol = resolved
-        mds = MarketDataService(candle_repo, BinanceCandleService(effective_settings))
-        await mds.sync_history(
-            payload.symbol.upper(),
-            payload.timeframe,
-            payload.lookback_days,
-            market=market,
-            binance_symbol=binance_symbol,
-        )
-        # Also sync trend timeframe for MTF strategies
-        trend_tf = getattr(payload, "trend_timeframe", None) or "4h"
-        if trend_tf != payload.timeframe:
+    async def _run_single(symbol_value: str):
+        if payload.auto_sync:
+            binance_symbol = symbol_value.upper()
+            mapping_repo = SymbolMappingRepository(session)
+            resolver = SymbolResolverService(mapping_repo)
+            resolved = await resolver.resolve(symbol_value.upper(), market)
+            if resolved:
+                binance_symbol = resolved
+            mds = MarketDataService(candle_repo, BinanceCandleService(effective_settings))
             await mds.sync_history(
-                payload.symbol.upper(),
-                trend_tf,
+                symbol_value.upper(),
+                payload.timeframe,
                 payload.lookback_days,
                 market=market,
                 binance_symbol=binance_symbol,
             )
+            trend_tf = getattr(payload, "trend_timeframe", None) or "4h"
+            if trend_tf != payload.timeframe:
+                await mds.sync_history(
+                    symbol_value.upper(),
+                    trend_tf,
+                    payload.lookback_days,
+                    market=market,
+                    binance_symbol=binance_symbol,
+                )
 
-    strategy = _build_strategy_from_payload(payload)
+        cpd = _candles_per_day(payload.timeframe)
+        desired_bars = payload.lookback_days * cpd
+        effective_max_bars = max(int(payload.max_bars or 0), int(desired_bars))
+        effective_max_bars = min(effective_max_bars, 50_000)
+        min_window = getattr(strategy, "min_bars", 30)
+        window_bars = max(min_window, min(int(cpd * 10), 1200))
+        if effective_max_bars > 2:
+            window_bars = min(window_bars, effective_max_bars - 2)
+        return await BacktestService(candle_repo, strategy).run(
+            symbol_value.upper(),
+            payload.timeframe,
+            window_bars=window_bars,
+            max_bars=effective_max_bars,
+            stride=payload.stride,
+            initial_equity=payload.initial_equity,
+            risk_per_trade=payload.risk_per_trade,
+            fee_bps=payload.fee_bps,
+            slippage_bps=payload.slippage_bps,
+            intra_candle_mode=(payload.intra_candle_mode or "pessimistic").lower(),
+        )
 
-    cpd = _candles_per_day(payload.timeframe)
-    desired_bars = payload.lookback_days * cpd
-    # Protect local runs from accidentally requesting hundreds of thousands of 1m candles.
-    effective_max_bars = max(int(payload.max_bars or 0), int(desired_bars))
-    effective_max_bars = min(effective_max_bars, 50_000)
-    # Strategy window: enough for Three Screens + some context.
-    min_window = getattr(strategy, "min_bars", 30)
-    window_bars = max(min_window, min(int(cpd * 10), 1200))
-    if effective_max_bars > 2:
-        window_bars = min(window_bars, effective_max_bars - 2)
-    trades, stats = await BacktestService(candle_repo, strategy).run(
-        payload.symbol.upper(),
-        payload.timeframe,
-        window_bars=window_bars,
-        max_bars=effective_max_bars,
-        stride=payload.stride,
-        initial_equity=payload.initial_equity,
-        risk_per_trade=payload.risk_per_trade,
-        fee_bps=payload.fee_bps,
-        slippage_bps=payload.slippage_bps,
-        intra_candle_mode=(payload.intra_candle_mode or "pessimistic").lower(),
-    )
+    processed_pairs = 0
+    universe_pairs = 1
+    selected_symbol = payload.symbol.upper()
+    mode = "market_wide" if payload.market_wide else "single_pair"
+    runtime.start(mode=mode, total_pairs=1, selected_symbol=selected_symbol)
+
+    try:
+        if payload.market_wide:
+            market_service = BinanceMarketService(effective_settings)
+            pairs = await market_service.list_pairs(market)
+            universe_pairs = len(pairs)
+            quote_filter = payload.quote.upper()
+            filtered = [
+                pair for pair in pairs
+                if not quote_filter or pair.get("quote_asset") == quote_filter
+            ]
+            filtered.sort(key=lambda item: float(item.get("volatility_score", 0) or 0), reverse=True)
+            filtered = filtered[: max(int(payload.max_pairs or 0), 1)]
+            processed_pairs = len(filtered)
+            selected_symbol = None
+            runtime.start(mode=mode, total_pairs=processed_pairs, selected_symbol=None)
+            all_trades = []
+            for index, pair in enumerate(filtered, start=1):
+                runtime.advance(pair["symbol"], processed_pairs=index - 1, matched_trades=len(all_trades))
+                pair_trades, _pair_stats = await _run_single(pair["symbol"])
+                all_trades.extend(pair_trades)
+                runtime.advance(pair["symbol"], processed_pairs=index, matched_trades=len(all_trades))
+            all_trades.sort(key=lambda item: (item.entry_time, item.symbol))
+            stats = BacktestService(candle_repo, strategy)._stats(
+                all_trades,
+                initial_equity=payload.initial_equity,
+                risk_per_trade=payload.risk_per_trade,
+            )
+            trades = all_trades
+        else:
+            runtime.start(mode=mode, total_pairs=1, selected_symbol=selected_symbol)
+            runtime.advance(payload.symbol.upper(), processed_pairs=0, matched_trades=0)
+            processed_pairs = 1
+            trades, stats = await _run_single(payload.symbol)
+            runtime.advance(payload.symbol.upper(), processed_pairs=1, matched_trades=len(trades))
+        runtime.finish(processed_pairs=processed_pairs, matched_trades=len(trades))
+    except Exception as exc:
+        runtime.fail(str(exc))
+        raise
 
     return BacktestResponse(
         status="ok",
+        mode=mode,
+        selected_symbol=selected_symbol,
+        processed_pairs=processed_pairs,
+        universe_pairs=universe_pairs,
         trades=[BacktestTradeRead.model_validate(trade) for trade in trades],
         stats=BacktestStatsRead.model_validate(stats),
     )

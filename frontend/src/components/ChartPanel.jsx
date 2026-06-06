@@ -190,15 +190,18 @@ function formatCompact(value, digits = 1) {
 }
 
 function compactReason(signal) {
-  const trend = signal?.meta?.screen1?.h1_trend;
+  const trend = signal?.meta?.trend?.bias ?? signal?.meta?.screen1?.h1_trend;
   const stochK = signal?.meta?.screen2?.stoch_k;
-  const fibHint = signal?.meta?.trade_plan ? "Fib pullback" : null;
+  const setupMode = signal?.meta?.setup?.mode;
+  const patternName = signal?.meta?.setup?.pattern_name ?? signal?.meta?.chart_pattern?.name;
   const parts = [];
   if (trend === -1) parts.push("4H Bear");
   if (trend === 1) parts.push("4H Bull");
   if (Number(stochK) >= 70) parts.push("Stoch > 70");
   if (Number(stochK) <= 30) parts.push("Stoch < 30");
-  if (fibHint) parts.push(fibHint);
+  if (setupMode === "pullback") parts.push("Fib pullback");
+  if (setupMode === "breakout") parts.push("Pattern breakout");
+  if (patternName) parts.push(String(patternName).replace(/_/g, " ").slice(0, 16));
   return parts.slice(0, 3).join(" · ") || "Strategy setup";
 }
 
@@ -260,6 +263,9 @@ export default function ChartPanel({
   onMoveStopToPrice = null,
   onMoveTakeToPrice = null,
   onRequestStopDragConfirm = null,
+  onMoveStopToBreakeven = null,
+  onNudgeStop = null,
+  onNudgeTake = null,
 }) {
   const chartRef = useRef(null);
   const containerRef = useRef(null);
@@ -382,8 +388,8 @@ export default function ChartPanel({
         if (!Array.isArray(line.points) || line.points.length < 2) return;
         lines.push({
           points: line.points,
-          color: "rgba(56, 189, 248, 0.62)",
-          style: line.style ?? 2,
+          color: pattern.state === "confirmed" ? "rgba(56, 189, 248, 0.8)" : "rgba(251, 191, 36, 0.75)",
+          style: pattern.state === "confirmed" ? (line.style ?? 2) : 3,
         });
       });
     });
@@ -391,7 +397,7 @@ export default function ChartPanel({
   }, [visibleChartPatterns]);
   const patternPolygons = useMemo(() => {
     if (!showPatternFill || !visibleChartPatterns.length) return [];
-    const patterns = visibleChartPatterns.slice(-patternFillLimit);
+    const patterns = visibleChartPatterns.filter((pattern) => pattern.confirmed).slice(-patternFillLimit);
     const polygons = [];
     patterns.forEach((pattern) => {
       const lines = (pattern.lines || []).filter(
@@ -445,7 +451,7 @@ export default function ChartPanel({
   const decisionSummary = useMemo(() => {
     if (!latestSignal) return null;
     const plan = latestSignal.meta?.trade_plan || signalTradePlan || {};
-    const screen1 = latestSignal.meta?.screen1 || {};
+    const trendMeta = latestSignal.meta?.trend || latestSignal.meta?.screen1 || {};
     const screen2 = latestSignal.meta?.screen2 || {};
     const risk = Math.abs(Number(plan.entry) - Number(plan.stop_loss));
     const reward = Math.abs(Number(plan.take_profit) - Number(plan.entry));
@@ -457,7 +463,12 @@ export default function ChartPanel({
     return {
       side: (latestSignal.signal_type || "").toUpperCase(),
       confidence: Math.round(Number(latestSignal.confidence || 0) * 100),
-      trend: screen1.h1_trend === -1 ? "Bear" : screen1.h1_trend === 1 ? "Bull" : "-",
+      trend:
+        (trendMeta.bias ?? trendMeta.h1_trend) === -1
+          ? "Bear"
+          : (trendMeta.bias ?? trendMeta.h1_trend) === 1
+            ? "Bull"
+            : "-",
       rsi: screen2.rsi,
       stochK: screen2.stoch_k,
       stochD: screen2.stoch_d,
@@ -521,6 +532,35 @@ export default function ChartPanel({
     });
     return markers;
   }, [showTradeExits, tradeHistory]);
+  const magneticLevels = useMemo(() => {
+    const levels = [];
+    fibLevels.forEach((level) => {
+      if (Number.isFinite(level?.value)) levels.push(Number(level.value));
+    });
+    supportLevels.forEach((level) => {
+      if (Number.isFinite(level)) levels.push(Number(level));
+    });
+    tradePlanLevels.forEach((level) => {
+      if (Number.isFinite(level?.price)) levels.push(Number(level.price));
+    });
+    return [...new Set(levels)];
+  }, [fibLevels, supportLevels, tradePlanLevels]);
+
+  const snapToMagnet = (price) => {
+    const numeric = Number(price);
+    if (!Number.isFinite(numeric) || !magneticLevels.length) return numeric;
+    const tolerance = Math.max(Math.abs(numeric) * 0.0012, 2 / Math.pow(10, precision));
+    let best = numeric;
+    let bestDistance = tolerance;
+    magneticLevels.forEach((level) => {
+      const distance = Math.abs(level - numeric);
+      if (distance <= bestDistance) {
+        best = level;
+        bestDistance = distance;
+      }
+    });
+    return best;
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -1189,7 +1229,7 @@ export default function ChartPanel({
     if (!Number.isFinite(currentStop) || currentStop <= 0) return;
 
     const container = containerRef.current;
-    const minHitDistancePx = 24;
+    const minHitDistancePx = 40;
 
     const getStopY = () => seriesRef.current?.priceToCoordinate?.(currentStop);
     const getTakeY = () => seriesRef.current?.priceToCoordinate?.(currentTake);
@@ -1212,13 +1252,22 @@ export default function ChartPanel({
     };
 
     const onPointerMove = (event) => {
-      if (!dragStateRef.current.active) return;
       const rect = container.getBoundingClientRect();
       const y = event.clientY - rect.top;
+      const stopY = getStopY();
+      const takeY = getTakeY();
+      const stopHit = Number.isFinite(stopY) && Math.abs(y - stopY) <= minHitDistancePx;
+      const takeHit = Number.isFinite(takeY) && Math.abs(y - takeY) <= minHitDistancePx;
+      if (!dragStateRef.current.active) {
+        container.style.cursor = stopHit || takeHit ? "ns-resize" : "";
+        return;
+      }
+      if (!dragStateRef.current.active) return;
       const price = Number(toPrice(y));
       if (!Number.isFinite(price) || price <= 0) return;
-      dragStopPriceRef.current = price;
-      setDragStopPrice(price);
+      const snappedPrice = snapToMagnet(price);
+      dragStopPriceRef.current = snappedPrice;
+      setDragStopPrice(snappedPrice);
       event.preventDefault();
     };
 
@@ -1260,7 +1309,41 @@ export default function ChartPanel({
       setIsDraggingStop(false);
       setDragStopPrice(null);
     };
-  }, [activeOrder, onMoveStopToPrice, onMoveTakeToPrice, onRequestStopDragConfirm]);
+  }, [activeOrder, onMoveStopToPrice, onMoveTakeToPrice, onRequestStopDragConfirm, magneticLevels, precision]);
+
+  useEffect(() => {
+    if (!activeOrder) return;
+    const onKeyDown = (event) => {
+      if (event.repeat) return;
+      if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+      if (event.key.toLowerCase() === "b" && typeof onMoveStopToBreakeven === "function") {
+        event.preventDefault();
+        onMoveStopToBreakeven(activeOrder);
+        return;
+      }
+      if (event.shiftKey && typeof onNudgeTake === "function") {
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          onNudgeTake(1);
+        } else if (event.key === "ArrowDown") {
+          event.preventDefault();
+          onNudgeTake(-1);
+        }
+        return;
+      }
+      if (event.altKey && typeof onNudgeStop === "function") {
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          onNudgeStop(1);
+        } else if (event.key === "ArrowDown") {
+          event.preventDefault();
+          onNudgeStop(-1);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeOrder, onMoveStopToBreakeven, onNudgeStop, onNudgeTake]);
 
   return (
     <div className="chart-panel" ref={containerRef} style={{ height }}>
@@ -1298,6 +1381,24 @@ export default function ChartPanel({
         >
           {dragStateRef.current.kind === "take" ? "TP" : "SL"} DRAG ACTIVE{" "}
           {Number.isFinite(dragStopPrice) ? `· ${Number(dragStopPrice).toFixed(6)}` : ""}
+        </div>
+      ) : null}
+      {activeOrder ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 14,
+            bottom: 14,
+            zIndex: 7,
+            padding: "6px 10px",
+            borderRadius: 8,
+            background: "rgba(8,14,24,.78)",
+            border: "1px solid rgba(148,163,184,.2)",
+            color: "#cbd5e1",
+            fontSize: 11,
+          }}
+        >
+          Hotkeys: <strong>Alt+↑/↓</strong> SL, <strong>Shift+↑/↓</strong> TP, <strong>B</strong> = BE
         </div>
       ) : null}
       <canvas className="chart-overlay" ref={overlayRef} />

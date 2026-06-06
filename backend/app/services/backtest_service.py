@@ -355,14 +355,17 @@ class BacktestService:
             else:
                 # Fallback for legacy trades without stop in payload.
                 trade_ret = (trade.pnl / 100.0) * risk_per_trade
+            # Keep the simulated account from going negative due to pathological
+            # inputs or tiny stop distances that would otherwise explode R-multiples.
+            trade_ret = max(trade_ret, -0.99)
             trade_returns.append(trade_ret)
-            equity *= 1 + trade_ret
+            equity = max(equity * (1 + trade_ret), 0.0)
             if equity > peak:
                 peak = equity
             dd = peak - equity
             if dd > max_dd:
                 max_dd = dd
-        max_dd_pct = (max_dd / peak) * 100 if peak > 0 else 0.0
+        max_dd_pct = min((max_dd / peak) * 100, 100.0) if peak > 0 else 0.0
 
         sharpe = None
         if len(trade_returns) >= 2:

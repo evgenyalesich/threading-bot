@@ -13,3 +13,7 @@ class StrategyFilters:
     require_divergence: bool = False
     require_candle: bool = False
     require_volume_confirm: bool = False
+    min_trend_strength: float = 0.12
+    min_reward_risk: float = 2.5
+    allow_candidate_patterns: bool = False
+    quality_mode: str = "sniper"

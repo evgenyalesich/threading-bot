@@ -133,7 +133,11 @@ class IndicatorSeriesService:
                     "name": pattern.get("name"),
                     "direction": pattern.get("direction", "neutral"),
                     "confidence": float(pattern.get("confidence", 0)),
+                    "state": "confirmed" if pattern.get("confirmed") else "candidate",
                     "confirmed": bool(pattern.get("confirmed")),
+                    "breakout": float(pattern.get("breakout")) if isinstance(pattern.get("breakout"), (int, float)) else None,
+                    "target": float(pattern.get("target")) if isinstance(pattern.get("target"), (int, float)) else None,
+                    "stop_level": float(pattern.get("stop_level")) if isinstance(pattern.get("stop_level"), (int, float)) else None,
                     "lines": line_payloads,
                 }
             )

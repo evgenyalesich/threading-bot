@@ -177,6 +177,28 @@ Frontend: `http://localhost:5173`
 Backend: `http://localhost:8000`  
 Docs: `http://localhost:8000/docs`
 
+## Production Docker
+
+Create `backend/.env.production` from the local backend environment and
+`infra/.env` from `infra/.env.example`, then run:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.yml up -d --build
+```
+
+The production container serves the React UI and FastAPI from the same port.
+PostgreSQL is isolated inside the Compose network and persisted in a named
+volume. Database migrations run automatically before every application start.
+Set `AUTOMATION_ENABLED_ON_START=true` in `backend/.env.production` to resume
+market scanning automatically after a container or server restart.
+Add extra Telegram users with `TELEGRAM_ALLOWED_CHAT_IDS=123,456`; the primary
+`TELEGRAM_CHAT_ID` is included automatically.
+
+By default the production port is bound to server localhost for safety. Open an
+SSH tunnel with `ssh -L 18082:127.0.0.1:18082 user@server` and use
+`http://localhost:18082`, or place the app behind an authenticated HTTPS reverse
+proxy before exposing it publicly.
+
 ## EN: Quick Start (Windows)
 ```powershell
 .\dev-up.ps1

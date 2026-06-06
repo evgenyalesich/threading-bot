@@ -22,9 +22,8 @@ class BinanceMarketService:
     def _rest_bases(self, market: str) -> list[str]:
         """Return REST bases to try in order.
 
-        We prefer real endpoints for broader symbol coverage/history, but in some
-        environments the real API endpoints are blocked/unreachable while testnet
-        endpoints still work. Falling back avoids hard failures in the UI.
+        In testnet mode prefer testnet first so automation does not die on
+        real-endpoint region blocks like HTTP 418. Fall back to real only if needed.
         """
 
         market = market.lower()
@@ -36,8 +35,7 @@ class BinanceMarketService:
             test_base = self._settings.binance_rest_spot_testnet_url.rstrip("/")
 
         if self._settings.binance_testnet:
-            # Prefer real first, then fallback to testnet.
-            return [real_base, test_base]
+            return [test_base, real_base]
         return [real_base]
 
     def _exchange_info_path(self, market: str) -> str:
@@ -155,8 +153,8 @@ class BinanceMarketService:
         last_exc: Exception | None = None
         bases = self._rest_bases(market)
         for index, base in enumerate(bases):
-            # If we're in testnet mode, the first base is the real API. In some networks it is
-            # blocked/unreachable; don't stall the UI for a long time before falling back.
+            # In testnet mode, first try the testnet endpoint quickly. If it lacks data or
+            # fails, fallback to the real endpoint without freezing the worker.
             timeout = httpx.Timeout(20.0, connect=6.0)
             if self._settings.binance_testnet and index == 0 and len(bases) > 1:
                 timeout = httpx.Timeout(6.0, connect=2.0)

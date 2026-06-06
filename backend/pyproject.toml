@@ -13,7 +13,8 @@ dependencies = [
   "asyncpg>=0.29.0",
   "alembic>=1.13.0",
   "pandas>=2.2.0",
-  "numpy>=2.0.0",
+  # NumPy 2.4 Linux wheels require x86-64-v2; keep compatibility with older VPS CPUs.
+  "numpy>=2.0.0,<2.3.0",
   "ta-lib>=0.4.28",
   "yfinance>=0.2.40",
   "python-binance>=1.0.19",

@@ -58,7 +58,7 @@ class MarketStreamService:
             test_base = self._settings.binance_rest_spot_testnet_url.rstrip("/")
 
         if self._settings.binance_testnet:
-            return [real_base, test_base]
+            return [test_base, real_base]
         return [real_base]
 
     def _klines_path(self, market: str) -> str:

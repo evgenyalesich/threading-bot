@@ -6,7 +6,7 @@ class AnalysisExplainRequest(BaseSchema):
     timeframe: str
     lookback_days: int = 120
     market: str = "spot"
-    strategy: str = "ema200_fib_divergence"
+    strategy: str = "adaptive_pattern_confluence"
     h1_timeframe: str = "1h"
     data_env: str = "real"
     min_confidence: float = 0.35
@@ -15,3 +15,7 @@ class AnalysisExplainRequest(BaseSchema):
     require_divergence: bool = False
     require_candle: bool = False
     require_volume_confirm: bool = False
+    min_trend_strength: float = 0.12
+    min_reward_risk: float = 2.5
+    allow_candidate_patterns: bool = False
+    quality_mode: str = "sniper"

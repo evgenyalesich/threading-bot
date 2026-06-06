@@ -11,14 +11,20 @@ import TradeJournal from "./components/TradeJournal.jsx";
 import AnalysisDebugPanel from "./components/AnalysisDebugPanel.jsx";
 import AccountPanel from "./components/AccountPanel.jsx";
 import OrderConfirmModal from "./components/OrderConfirmModal.jsx";
+import AutomationCenter from "./components/AutomationCenter.jsx";
 import {
+  approveAutomationSignal,
   closeOrderPosition,
   backfillSignals,
+  disableAutomation,
+  enableAutomation,
   fetchCandles,
   fetchIndicators,
   fetchOrders,
   fetchPairs,
   fetchSignals,
+  fetchAutomationState,
+  fetchBacktestStatus,
   explainAnalysis,
   fetchAccountSummary,
   fetchAccountTrades,
@@ -26,14 +32,17 @@ import {
   moveStopToPrice,
   moveTakeToPrice,
   placeOrder,
+  rejectAutomationSignal,
   resolveSymbol,
   runAnalysis,
+  runAutomationNow,
   runBacktest,
   scanMarket,
+  setAutomationMode,
+  setAutomationTradeEnv,
   syncMarket,
+  updateAutomationConfig,
 } from "./api/client.js";
-
-const BASE_SYNC_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"];
 
 function toEpochSeconds(value) {
   return Math.floor(new Date(value).getTime() / 1000);
@@ -48,6 +57,24 @@ function timeframeToMs(tf) {
   if (unit === "h") return value * 60 * 60 * 1000;
   if (unit === "d") return value * 24 * 60 * 60 * 1000;
   return null;
+}
+
+function resolvePriceStep(basePrice) {
+  const base = Math.abs(Number(basePrice) || 0);
+  if (base >= 10000) return 25;
+  if (base >= 1000) return 5;
+  if (base >= 100) return 0.5;
+  if (base >= 1) return 0.01;
+  return 0.0001;
+}
+
+function formatCompactNumber(value, digits = 2) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  return numeric.toLocaleString("ru-RU", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  });
 }
 
 function humanizeApiError(code) {
@@ -75,15 +102,23 @@ function humanizeNoSignalReason(reason) {
     stoch_not_confirming: "Stochastic не подтверждает вход.",
     rsi_not_confirming: "RSI не подтверждает вход.",
     confidence_below_min: "Уверенность ниже минимального порога.",
+    confirmations_below_min: "Недостаточно подтверждений для входа.",
     below_ema200_no_long: "Цена ниже EMA200, лонг отфильтрован.",
     above_ema200_no_short: "Цена выше EMA200, шорт отфильтрован.",
+    higher_timeframe_bias_missing: "На 4H нет чистого направления, поэтому вход пропущен.",
+    higher_timeframe_mismatch: "Вход против 4H тренда запрещен.",
     trend_too_flat: "Тренд слишком плоский, пропускаю флэт.",
+    trend_less_informative: "Тренд слабый, поэтому стратегия ослабила его вес.",
     volatility_too_low: "Волатильность слишком низкая.",
     volatility_spike_skip: "Слишком резкий всплеск волатильности.",
     weak_signal_candle: "Сигнальная свеча слабая.",
     risk_too_wide: "Стоп слишком далеко от входа.",
     risk_too_tight: "Стоп слишком близко к входу.",
     zero_risk: "Некорректный риск-профиль сделки (zero risk).",
+    pattern_required: "Стратегия ждала фигуру, но не нашла ее.",
+    divergence_required: "Нужна дивергенция, но подтверждения не хватило.",
+    candle_required: "Нужен свечной паттерн, но подтверждения не хватило.",
+    volume_confirm_required: "Нужен объемный фильтр, но он не подтвердился.",
     explain_failed: "Не удалось получить объяснение.",
   };
   return map[reason] || reason;
@@ -232,9 +267,12 @@ export default function App() {
   const [quoteAsset, setQuoteAsset] = useState("ALL");
   const [selectedPair, setSelectedPair] = useState(null);
   const [scanResults, setScanResults] = useState([]);
+  const [scanMeta, setScanMeta] = useState(null);
+  const [scanDiagnostics, setScanDiagnostics] = useState(null);
   const [scanRunning, setScanRunning] = useState(false);
-  const [scanLimit, setScanLimit] = useState(20);
-  const [scanMaxPairs, setScanMaxPairs] = useState(50);
+  const [scanMode, setScanMode] = useState("market");
+  const [scanLimit, setScanLimit] = useState(50);
+  const [scanMaxPairs, setScanMaxPairs] = useState(631);
   const [scanAutoSync, setScanAutoSync] = useState(false);
   const [onlyNewSignalsMinutes, setOnlyNewSignalsMinutes] = useState(60);
   const [newSignalModal, setNewSignalModal] = useState({ open: false, first: null, count: 0 });
@@ -250,7 +288,7 @@ export default function App() {
   const [mode, setMode] = useState("semi");
   const [h1Timeframe, setH1Timeframe] = useState("1h");
   const [trendTimeframe, setTrendTimeframe] = useState("4h");
-  const [strategy, setStrategy] = useState("swing_60pip");
+  const [strategy, setStrategy] = useState("adaptive_pattern_confluence");
 
   const [status, setStatus] = useState("Ожидание");
   const [sidebarWidth, setSidebarWidth] = useState(360);
@@ -289,12 +327,17 @@ export default function App() {
   const [requireVolumeConfirm, setRequireVolumeConfirm] = useState(false);
   const [backtestStats, setBacktestStats] = useState(null);
   const [backtestTrades, setBacktestTrades] = useState([]);
+  const [backtestMeta, setBacktestMeta] = useState(null);
   const [backtestRunning, setBacktestRunning] = useState(false);
+  const [backtestMode, setBacktestMode] = useState("market");
+  const [backtestProgress, setBacktestProgress] = useState(null);
   const [analysisDebug, setAnalysisDebug] = useState(null);
   const [accountSummary, setAccountSummary] = useState(null);
   const [accountTrades, setAccountTrades] = useState([]);
+  const [automationState, setAutomationState] = useState(null);
+  const [automationLoading, setAutomationLoading] = useState(false);
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
-  const [leverage, setLeverage] = useState(10);
+  const [leverage, setLeverage] = useState(25);
   const [fitRequest, setFitRequest] = useState(0);
   const [activeTab, setActiveTab] = useState("trade");
   const [wsConnected, setWsConnected] = useState(false);
@@ -363,6 +406,25 @@ export default function App() {
       source: sourceOrder.id ? "order" : "signal",
     };
   }, [latestOrderForSymbol, latestSignalForTimeframe]);
+  const latestSignalPlan = latestSignalForTimeframe?.meta?.trade_plan ?? null;
+  const latestSignalEntry = Number.isFinite(latestSignalPlan?.entry)
+    ? latestSignalPlan.entry
+    : latestSignalForTimeframe?.entry_price ?? null;
+  const latestSignalStop = Number.isFinite(latestSignalPlan?.stop_loss)
+    ? latestSignalPlan.stop_loss
+    : latestSignalForTimeframe?.stop_loss ?? null;
+  const latestSignalTake = Number.isFinite(latestSignalPlan?.take_profit)
+    ? latestSignalPlan.take_profit
+    : latestSignalForTimeframe?.take_profit ?? null;
+  const futuresPositionMap = useMemo(() => {
+    const rows = accountSummary?.market === "futures" ? accountSummary.futures_positions || [] : [];
+    return new Map(rows.map((position) => [(position.symbol || "").replace("-", "").toUpperCase(), position]));
+  }, [accountSummary]);
+  const activePosition = useMemo(() => {
+    const symbolKey = (binanceSymbol || symbol || "").replace("-", "").toUpperCase();
+    return futuresPositionMap.get(symbolKey) || null;
+  }, [binanceSymbol, symbol, futuresPositionMap]);
+  const activePositionRoi = useMemo(() => futuresPositionRoi(activePosition), [activePosition]);
 
   useEffect(() => {
     if (latestActiveOrder?.stop_loss) {
@@ -379,17 +441,55 @@ export default function App() {
       setChartTakeInput("");
     }
   }, [latestActiveOrder?.id, latestActiveOrder?.take_profit]);
+  useEffect(() => {
+    refreshAutomationState();
+    const timer = window.setInterval(() => {
+      refreshAutomationState();
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (!backtestRunning) return undefined;
+    let active = true;
+    const poll = async () => {
+      try {
+        const snapshot = await fetchBacktestStatus();
+        if (!active) return;
+        setBacktestProgress(snapshot);
+        if (snapshot?.status === "running") {
+          const done = Number(snapshot.processed_pairs ?? 0);
+          const total = Number(snapshot.total_pairs ?? 0);
+          const trades = Number(snapshot.matched_trades ?? 0);
+          const current = snapshot.current_symbol ? ` · ${snapshot.current_symbol}` : "";
+          setStatus(`Бэктест: ${done}/${total} пар, ${trades} сделок${current}`);
+        }
+      } catch {
+        // keep polling silently
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [backtestRunning]);
   const priceMap = useMemo(() => new Map(pairs.map((pair) => [pair.symbol, pair.last_price])), [pairs]);
-  const futuresPositionMap = useMemo(() => {
-    const rows = accountSummary?.market === "futures" ? accountSummary.futures_positions || [] : [];
-    return new Map(rows.map((position) => [(position.symbol || "").replace("-", "").toUpperCase(), position]));
-  }, [accountSummary]);
   const currentPair = useMemo(() => {
     if (selectedPair?.symbol === binanceSymbol) {
       return selectedPair;
     }
     return pairs.find((pair) => pair.symbol === binanceSymbol) ?? selectedPair;
   }, [selectedPair, pairs, binanceSymbol]);
+  const currentPrice = candles.length ? Number(candles[candles.length - 1]?.close) : currentPair?.last_price ?? null;
+  const refreshAutomationState = async () => {
+    try {
+      const snapshot = await fetchAutomationState();
+      setAutomationState(snapshot);
+    } catch (error) {
+      console.error("Failed to refresh automation state", error);
+    }
+  };
 
   const filteredPairs = useMemo(() => {
     return pairs
@@ -513,12 +613,7 @@ export default function App() {
   const pageSize = 1000;
   const maxCandlesTotal = useMemo(() => Math.max(maxCandles, 15000), [maxCandles]);
   const syncTimeframes = useMemo(() => {
-    const merged = [
-      ...BASE_SYNC_TIMEFRAMES,
-      timeframe,
-      h1Timeframe,
-      trendTimeframe,
-    ].filter(Boolean);
+    const merged = [timeframe, h1Timeframe, trendTimeframe].filter(Boolean);
     return [...new Set(merged)];
   }, [timeframe, h1Timeframe, trendTimeframe]);
 
@@ -533,7 +628,7 @@ export default function App() {
     const localDataEnv = dataEnv;
     if (doSync) {
       const queue = [...syncTimeframes];
-      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+      const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {
         while (queue.length) {
           const tf = queue.shift();
           if (!tf) continue;
@@ -759,7 +854,7 @@ export default function App() {
           }
         })();
       }
-    }, 2500);
+    }, 1200);
 
     const interval = setInterval(() => {
       const tickLock = `${lockKey}:tick`;
@@ -774,7 +869,7 @@ export default function App() {
           setAutoSyncRunning(false);
         }
       })();
-    }, 180000);
+    }, 300000);
 
     return () => {
       clearTimeout(initialTimer);
@@ -1325,10 +1420,22 @@ export default function App() {
 
   const handleBacktest = async () => {
     setBacktestRunning(true);
+    setBacktestProgress({
+      status: "running",
+      mode: backtestMode === "market" ? "market_wide" : "single_pair",
+      selected_symbol: backtestMode === "single" ? symbol : null,
+      processed_pairs: 0,
+      total_pairs: backtestMode === "market" ? scanMaxPairs : 1,
+      matched_trades: 0,
+      current_symbol: null,
+    });
     setStatus("Запуск бэктеста...");
     try {
       const response = await runBacktest({
         symbol,
+        market_wide: backtestMode === "market",
+        quote: quoteAsset === "ALL" ? "" : quoteAsset,
+        max_pairs: scanMaxPairs,
         timeframe,
         strategy,
         lookback_days: lookbackDays,
@@ -1348,9 +1455,31 @@ export default function App() {
       });
       setBacktestStats(response.stats ?? null);
       setBacktestTrades(response.trades ?? []);
+      setBacktestMeta({
+        mode: response.mode ?? (backtestMode === "market" ? "market_wide" : "single_pair"),
+        selectedSymbol: response.selected_symbol ?? symbol,
+        processedPairs: Number(response.processed_pairs ?? 0),
+        universePairs: Number(response.universe_pairs ?? 0),
+      });
+      setBacktestProgress({
+        status: "completed",
+        mode: response.mode ?? (backtestMode === "market" ? "market_wide" : "single_pair"),
+        selected_symbol: response.selected_symbol ?? symbol,
+        processed_pairs: Number(response.processed_pairs ?? 0),
+        total_pairs: Number(response.processed_pairs ?? 0),
+        matched_trades: Number(response.stats?.total_trades ?? 0),
+        current_symbol: null,
+      });
       const totalTrades = response.stats?.total_trades ?? 0;
-      setStatus(`Бэктест готов (${totalTrades})`);
+      setStatus(
+        `Бэктест готов: ${totalTrades} сделок, ${Number(response.processed_pairs ?? 0)} пар`
+      );
     } catch (error) {
+      setBacktestProgress((prev) => ({
+        ...(prev || {}),
+        status: "error",
+        last_error: error?.message ?? "unknown",
+      }));
       setStatus("Ошибка бэктеста");
     } finally {
       setBacktestRunning(false);
@@ -1396,6 +1525,7 @@ export default function App() {
       });
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
+      await refreshAutomationState();
       if (placed?.status === "rejected") {
         setStatus(`Ордер отклонен: ${placed.reject_reason || "причина не указана"}`);
       } else if (placed?.status === "exit_failed") {
@@ -1447,6 +1577,8 @@ export default function App() {
     setStatus("Сканирую рынок...");
     try {
       const response = await scanMarket({
+        symbol,
+        market_wide: scanMode === "market",
         market,
         timeframe,
         strategy,
@@ -1469,15 +1601,26 @@ export default function App() {
         require_volume_confirm: requireVolumeConfirm,
       });
       setScanResults(response.signals ?? []);
+      setScanMeta({
+        mode: response.mode ?? (scanMode === "market" ? "market_wide" : "single_pair"),
+        selectedSymbol: response.selected_symbol ?? symbol,
+        processedPairs: Number(response.processed_pairs ?? 0),
+        universePairs: Number(response.universe_pairs ?? 0),
+      });
+      setScanDiagnostics(response.diagnostics ?? null);
       const count = Number(response.new_signals_count || 0);
       if (count > 0 && Array.isArray(response.signals) && response.signals.length > 0) {
         setNewSignalModal({ open: true, first: response.signals[0], count });
       }
-      setStatus(`Скан готов (${response.scanned}), новых: ${count}`);
+      setStatus(
+        `Скан готов: сигналов ${response.scanned}, новых ${count}, пар ${Number(response.processed_pairs ?? 0)}`
+      );
     } catch (error) {
       const message = error?.message ? String(error.message) : "unknown";
       setStatus(`Ошибка сканирования: ${message}`);
       setScanResults([]);
+      setScanMeta(null);
+      setScanDiagnostics(null);
     } finally {
       setScanRunning(false);
     }
@@ -1501,6 +1644,7 @@ export default function App() {
       await closeOrderPosition(order.id);
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
+      await refreshAutomationState();
       setStatus("Позиция закрыта");
     } catch (error) {
       setStatus(`Ошибка закрытия: ${error?.message ?? "unknown"}`);
@@ -1514,6 +1658,7 @@ export default function App() {
       await moveStopToBreakeven(order.id);
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
+      await refreshAutomationState();
       setStatus("SL перенесен в безубыток");
     } catch (error) {
       setStatus(`Ошибка BE: ${humanizeApiError(error?.message ?? "unknown")}`);
@@ -1527,6 +1672,7 @@ export default function App() {
       await moveStopToPrice(order.id, stopPrice);
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
+      await refreshAutomationState();
       setStatus(`SL обновлен: ${stopPrice}`);
     } catch (error) {
       setStatus(`Ошибка SL: ${humanizeApiError(error?.message ?? "unknown")}`);
@@ -1540,10 +1686,29 @@ export default function App() {
       await moveTakeToPrice(order.id, takePrice);
       const updatedOrders = await fetchOrders(100);
       setOrders(updatedOrders);
+      await refreshAutomationState();
       setStatus(`TP обновлен: ${takePrice}`);
     } catch (error) {
       setStatus(`Ошибка TP: ${humanizeApiError(error?.message ?? "unknown")}`);
     }
+  };
+
+  const handleNudgeChartStop = (direction) => {
+    const basePrice = Number(latestActiveOrder?.stop_loss || latestActiveOrder?.price || 0);
+    const currentValue = Number(chartStopInput || basePrice);
+    if (!Number.isFinite(currentValue) || currentValue <= 0) return;
+    const next = currentValue + resolvePriceStep(basePrice || currentValue) * direction;
+    if (next <= 0) return;
+    setChartStopInput(String(next));
+  };
+
+  const handleNudgeChartTake = (direction) => {
+    const basePrice = Number(latestActiveOrder?.take_profit || latestActiveOrder?.price || 0);
+    const currentValue = Number(chartTakeInput || basePrice);
+    if (!Number.isFinite(currentValue) || currentValue <= 0) return;
+    const next = currentValue + resolvePriceStep(basePrice || currentValue) * direction;
+    if (next <= 0) return;
+    setChartTakeInput(String(next));
   };
 
   const handleRequestStopDragConfirm = (order, nextStop) => {
@@ -1553,6 +1718,59 @@ export default function App() {
       order,
       nextStop,
     });
+  };
+
+  const handleSyncWorkspaceToAutomation = async () => {
+    setAutomationLoading(true);
+    try {
+      const snapshot = await updateAutomationConfig({
+        symbol: binanceSymbol || symbol,
+        scan_market_wide: true,
+        quote: quoteAsset === "ALL" ? "" : quoteAsset,
+        max_pairs: scanMaxPairs,
+        timeframe,
+        market,
+        data_env: dataEnv,
+        trade_env: tradeEnv,
+        lookback_days: lookbackDays,
+        quantity,
+        quote_amount: quoteAmount,
+        auto_quantity: autoQuantity,
+        attach_orders: attachOrders,
+        auto_breakeven: autoBreakeven,
+        leverage: market === "futures" ? leverage : null,
+        min_confidence: minConfidence,
+        min_confirmations: minConfirmations,
+        require_pattern: requirePattern,
+        require_divergence: requireDivergence,
+        require_candle: requireCandle,
+        require_volume_confirm: requireVolumeConfirm,
+        h1_timeframe: h1Timeframe,
+        trend_timeframe: trendTimeframe,
+        mode,
+      });
+      setAutomationState(snapshot);
+      setStatus("Automation center обновлен из текущего workspace");
+    } catch (error) {
+      setStatus(`Ошибка automation sync: ${error?.message ?? "unknown"}`);
+    } finally {
+      setAutomationLoading(false);
+    }
+  };
+
+  const runAutomationAction = async (action, successStatus, failurePrefix = "Ошибка automation") => {
+    setAutomationLoading(true);
+    try {
+      const snapshot = await action();
+      setAutomationState(snapshot);
+      if (successStatus) {
+        setStatus(successStatus);
+      }
+    } catch (error) {
+      setStatus(`${failurePrefix}: ${error?.message ?? "unknown"}`);
+    } finally {
+      setAutomationLoading(false);
+    }
   };
 
   const formatLiveTime = (value) => {
@@ -1664,84 +1882,25 @@ export default function App() {
           </div>
           <div className="chart-body">
             {latestActiveOrder ? (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 10,
-                  right: 10,
-                  zIndex: 6,
-                  background: "rgba(8,14,24,.92)",
-                  border: "1px solid rgba(148,163,184,.25)",
-                  borderRadius: 10,
-                  padding: 10,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                  minWidth: 230,
-                }}
-              >
-                <strong style={{ fontSize: 12 }}>
-                  {latestActiveOrder.symbol} · {latestActiveOrder.side}
-                </strong>
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                  Entry: {Number(latestActiveOrder.price || 0).toFixed(6)}
-                </span>
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                  SL: {Number(latestActiveOrder.stop_loss || 0).toFixed(6)}
-                </span>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => handleMoveStopToBreakeven(latestActiveOrder)}
-                  >
-                    SL в BE
-                  </button>
+              <div className="chart-position-pill">
+                <div className="chart-position-pill-head">
+                  <strong>{latestActiveOrder.symbol} · {latestActiveOrder.side}</strong>
+                  <span className={Number(activePositionRoi) >= 0 ? "positive" : "negative"}>
+                    {Number.isFinite(activePositionRoi) ? `${activePositionRoi.toFixed(2)}%` : "--"}
+                  </span>
                 </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input
-                    value={chartStopInput}
-                    onChange={(event) => setChartStopInput(event.target.value)}
-                    placeholder="Новый SL"
-                    style={{
-                      flex: 1,
-                      background: "#080e18e6",
-                      border: "1px solid rgba(148,163,184,.2)",
-                      color: "var(--text)",
-                      padding: "6px 8px",
-                      borderRadius: 8,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => handleMoveStopToPrice(latestActiveOrder, Number(chartStopInput))}
-                  >
-                    Применить
-                  </button>
+                <div className="chart-position-pill-grid">
+                  <span>Entry {formatCompactNumber(latestActiveOrder.price, 6)}</span>
+                  <span>SL {formatCompactNumber(latestActiveOrder.stop_loss, 6)}</span>
+                  <span>TP {formatCompactNumber(latestActiveOrder.take_profit, 6)}</span>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    value={chartTakeInput}
-                    onChange={(event) => setChartTakeInput(event.target.value)}
-                    placeholder="Новый TP"
-                    style={{
-                      flex: 1,
-                      background: "#080e18e6",
-                      border: "1px solid rgba(148,163,184,.2)",
-                      color: "var(--text)",
-                      padding: "6px 8px",
-                      borderRadius: 8,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => handleMoveTakeToPrice(latestActiveOrder, Number(chartTakeInput))}
-                  >
-                    Применить
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => handleMoveStopToBreakeven(latestActiveOrder)}
+                >
+                  SL в BE
+                </button>
               </div>
             ) : null}
             <ChartPanel
@@ -1784,6 +1943,9 @@ export default function App() {
               onMoveStopToPrice={handleMoveStopToPrice}
               onMoveTakeToPrice={handleMoveTakeToPrice}
               onRequestStopDragConfirm={handleRequestStopDragConfirm}
+              onMoveStopToBreakeven={handleMoveStopToBreakeven}
+              onNudgeStop={handleNudgeChartStop}
+              onNudgeTake={handleNudgeChartTake}
             />
             {candles.length === 0 ? (
               <div className="chart-empty">Нет данных. Нажми "Синхронизировать историю".</div>
@@ -1794,7 +1956,56 @@ export default function App() {
         ) : null}
         {activeTab === "backtest" ? (
           <section className="chart-card">
-            <div className="panel-title">Backtest Workspace</div>
+            <div className="workspace-header">
+              <div>
+                <div className="panel-title">Backtest Workspace</div>
+                <div className="journal-subtitle">
+                  {backtestMode === "single"
+                    ? `Single Pair · ${backtestMeta?.selectedSymbol || symbol}`
+                    : "Market-Wide · агрегированный результат по рынку"}
+                </div>
+              </div>
+              <div className="segmented-toggle compact workspace-toggle">
+                <button
+                  type="button"
+                  className={backtestMode === "single" ? "active" : ""}
+                  onClick={() => setBacktestMode("single")}
+                >
+                  Single Pair
+                </button>
+                <button
+                  type="button"
+                  className={backtestMode === "market" ? "active" : ""}
+                  onClick={() => setBacktestMode("market")}
+                >
+                  Market-Wide
+                </button>
+              </div>
+            </div>
+            <div className="workspace-summary-grid">
+              <div className="workspace-summary-card">
+                <span>Обработано пар</span>
+                <strong>{backtestRunning ? backtestProgress?.processed_pairs ?? 0 : backtestMeta?.processedPairs ?? 0}</strong>
+                <small>
+                  из universe {backtestRunning ? backtestProgress?.total_pairs ?? 0 : backtestMeta?.universePairs ?? 0}
+                </small>
+              </div>
+              <div className="workspace-summary-card">
+                <span>{backtestRunning ? "Прогресс" : "Фокус"}</span>
+                <strong>
+                  {backtestRunning
+                    ? `${backtestProgress?.matched_trades ?? 0} сделок`
+                    : backtestMode === "single"
+                      ? backtestMeta?.selectedSymbol || symbol
+                      : `${quoteAsset === "ALL" ? "ALL" : quoteAsset} · ${market}`}
+                </strong>
+                <small>
+                  {backtestRunning
+                    ? `${backtestProgress?.current_symbol || "подготовка..."}`
+                    : `${timeframe} · ${lookbackDays}d history`}
+                </small>
+              </div>
+            </div>
             <StatsPanel stats={activeStats} />
             <TradeHistoryPanel trades={displayedTrades} source={tradeHistorySource} />
             <AnalysisDebugPanel debug={analysisDebug} />
@@ -1806,6 +2017,11 @@ export default function App() {
             <ScanResultsPanel
               results={scanResults}
               running={scanRunning}
+              mode={scanMode}
+              processedPairs={scanMeta?.processedPairs ?? 0}
+              universePairs={scanMeta?.universePairs ?? 0}
+              selectedSymbol={scanMeta?.selectedSymbol ?? symbol}
+              diagnostics={scanDiagnostics}
               limit={scanLimit}
               maxPairs={scanMaxPairs}
               minVolatility={minVolatility}
@@ -1828,6 +2044,7 @@ export default function App() {
               onRequireVolumeConfirmChange={setRequireVolumeConfirm}
               onAutoSyncChange={setScanAutoSync}
               onOnlyNewSignalsMinutesChange={setOnlyNewSignalsMinutes}
+              onModeChange={setScanMode}
               onRunScan={handleScan}
               onSelectResult={handleSelectScanResult}
             />
@@ -1935,8 +2152,61 @@ export default function App() {
               onSync={handleSync}
               onAnalyze={handleAnalyze}
               mode={mode}
-              onModeToggle={() => setMode((prev) => (prev === "auto" ? "semi" : "auto"))}
+              onModeChange={setMode}
+              onOpenConfirmOrder={handleOpenConfirmOrder}
+              canConfirmOrder={activeTab === "trade" && mode === "semi" && latestSignalForTimeframe && binanceSymbol}
+              status={status}
+              wsConnected={wsConnected}
+              tradeWsConnected={tradeWsConnected}
+              feedSource={feedSource}
+              autoSyncRunning={autoSyncRunning}
+              lastSyncLabel={formatLiveTime(lastSyncAt)}
+              currentPair={currentPair}
+              currentPrice={currentPrice}
+              latestSignal={latestSignalForTimeframe}
+              latestActiveOrder={latestActiveOrder}
+              positionRoi={activePositionRoi}
+              chartStopInput={chartStopInput}
+              chartTakeInput={chartTakeInput}
+              onChartStopInputChange={setChartStopInput}
+              onChartTakeInputChange={setChartTakeInput}
+              onMoveStopToBreakeven={handleMoveStopToBreakeven}
+              onMoveStopToPrice={handleMoveStopToPrice}
+              onMoveTakeToPrice={handleMoveTakeToPrice}
+              onCloseOrder={handleCloseOrder}
+              onNudgeChartStop={handleNudgeChartStop}
+              onNudgeChartTake={handleNudgeChartTake}
             />
+            {activeTab === "trade" ? (
+              <AutomationCenter
+                state={automationState}
+                loading={automationLoading}
+                onSyncWorkspace={handleSyncWorkspaceToAutomation}
+                onEnable={() => runAutomationAction(enableAutomation, "Automation включена")}
+                onDisable={() => runAutomationAction(disableAutomation, "Automation остановлена")}
+                onRunNow={() => runAutomationAction(runAutomationNow, "Automation цикл выполнен")}
+                onSetMode={(nextMode) =>
+                  runAutomationAction(() => setAutomationMode(nextMode), `Automation mode: ${nextMode.toUpperCase()}`)
+                }
+                onSetTradeEnv={(nextTradeEnv) =>
+                  runAutomationAction(() => setAutomationTradeEnv(nextTradeEnv), `Automation env: ${nextTradeEnv}`)
+                }
+                onApprove={(signalId) =>
+                  runAutomationAction(
+                    async () => {
+                      const snapshot = await approveAutomationSignal(signalId);
+                      const updatedOrders = await fetchOrders(100);
+                      setOrders(updatedOrders);
+                      return snapshot;
+                    },
+                    `Сигнал ${signalId} подтвержден`
+                  )
+                }
+                onReject={(signalId) =>
+                  runAutomationAction(() => rejectAutomationSignal(signalId), `Сигнал ${signalId} отклонен`)
+                }
+              />
+            ) : null}
             {activeTab === "scanner" || activeTab === "trade" ? (
             <PairsPanel
               pairs={filteredPairs}
@@ -1954,11 +2224,6 @@ export default function App() {
               onSelectPair={handleSelectPair}
               loading={pairsLoading}
             />
-            ) : null}
-            {activeTab === "trade" && mode === "semi" && latestSignalForTimeframe && binanceSymbol ? (
-              <button className="primary confirm-order" onClick={handleOpenConfirmOrder}>
-                Подтвердить ордер ({latestSignalForTimeframe.signal_type.toUpperCase()})
-              </button>
             ) : null}
             {activeTab === "backtest" ? <StatsPanel stats={activeStats} /> : null}
             {activeTab === "trade" ? <AccountPanel summary={accountSummary} trades={accountTrades} /> : null}

@@ -1,16 +1,47 @@
-version: "3.9"
-
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: "6628"
+      POSTGRES_USER: threading_bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: threading_bot
-    ports:
-      - "5432:5432"
     volumes:
-      - threading_bot_pg:/var/lib/postgresql/data
+      - threading_bot_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U threading_bot -d threading_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - threading_bot
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: threading-bot:latest
+    restart: unless-stopped
+    env_file:
+      - ../backend/.env.production
+    environment:
+      DATABASE_URL: postgresql+asyncpg://threading_bot:${POSTGRES_PASSWORD}@postgres:5432/threading_bot
+      DEBUG: "false"
+      DB_AUTO_CREATE: "false"
+      STATIC_DIR: /app/static
+      CORS_ORIGINS: ${PUBLIC_ORIGIN:-http://176.117.69.41:18082}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Keep trading controls private until a TLS/authenticated reverse proxy is configured.
+      - "127.0.0.1:18082:8000"
+    networks:
+      - threading_bot
+
+networks:
+  threading_bot:
+    driver: bridge
 
 volumes:
-  threading_bot_pg:
+  threading_bot_postgres:

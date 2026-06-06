@@ -37,5 +37,9 @@ class BacktestStatsRead(BaseSchema):
 
 class BacktestResponse(BaseSchema):
     status: str
+    mode: str = "single_pair"
+    selected_symbol: str | None = None
+    processed_pairs: int = 0
+    universe_pairs: int = 0
     trades: list[BacktestTradeRead]
     stats: BacktestStatsRead

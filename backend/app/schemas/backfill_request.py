@@ -5,7 +5,7 @@ class BackfillRequest(BaseSchema):
     symbol: str
     timeframe: str
     lookback_days: int = 120
-    strategy: str = "ema200_fib_divergence"
+    strategy: str = "adaptive_pattern_confluence"
     stride: int = 5
     max_bars: int = 1000
     h1_timeframe: str = "1h"      # Entry signal timeframe (legacy)
@@ -16,3 +16,7 @@ class BackfillRequest(BaseSchema):
     require_divergence: bool = False
     require_candle: bool = False
     require_volume_confirm: bool = False
+    min_trend_strength: float = 0.12
+    min_reward_risk: float = 2.5
+    allow_candidate_patterns: bool = False
+    quality_mode: str = "sniper"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Awaitable, Callable
 
 import pandas as pd
 
@@ -28,6 +30,17 @@ class ScanResultItem:
     rank: float
     signal: Signal
     is_new: bool = False
+
+
+@dataclass
+class ScanRunStats:
+    mode: str
+    selected_symbol: str | None
+    universe_pairs: int
+    eligible_pairs: int
+    processed_pairs: int
+    matched_signals: int
+    reason_counts: dict[str, int]
 
 
 class MarketScanService:
@@ -64,54 +77,57 @@ class MarketScanService:
         auto_sync: bool,
         store_signals: bool,
         only_new_signals_minutes: int = 0,
-    ) -> list[ScanResultItem]:
+        symbol: str | None = None,
+        market_wide: bool = True,
+        progress_callback: Callable[[int, int, int, str], Awaitable[None] | None] | None = None,
+    ) -> tuple[list[ScanResultItem], ScanRunStats]:
         pairs = await self._market_service.list_pairs(market)
+        universe_pairs = len(pairs)
         filtered = [
             pair
             for pair in pairs
             if (not quote or pair.get("quote_asset") == quote)
             and pair.get("volatility_score", 0) >= min_volatility
         ]
+        eligible_pairs = len(filtered)
         filtered.sort(key=lambda item: item.get("volatility_score", 0), reverse=True)
-        filtered = filtered[:max_pairs]
+        selected_symbol = str(symbol or "").upper().replace("-", "")
+        mode = "market_wide" if market_wide else "single_pair"
+        if market_wide:
+            filtered = filtered[:max_pairs]
+        elif selected_symbol:
+            filtered = [pair for pair in filtered if str(pair.get("symbol") or "").upper() == selected_symbol]
+        else:
+            filtered = []
 
-        # Sync all entry + trend timeframes in parallel before processing
-        if auto_sync and filtered:
-            trend_tf = (
-                getattr(self._strategy, "trend_timeframe", None)
-                or getattr(self._strategy, "h1_timeframe", "1h")
-            ) if getattr(self._strategy, "is_mtf", False) else None
-
-            sync_tasks = []
-            for pair in filtered:
-                symbol = pair["symbol"]
-                # Sync entry timeframe
-                sync_tasks.append(
-                    self._safe_sync(symbol, timeframe, lookback_days, market, pair.get("symbol"))
-                )
-                # Sync trend timeframe if MTF strategy needs it
-                if trend_tf and trend_tf != timeframe:
-                    sync_tasks.append(
-                        self._safe_sync(symbol, trend_tf, lookback_days, market, pair.get("symbol"))
-                    )
-            # Run all syncs concurrently (cap at 10 at a time to avoid overloading Binance)
-            sem = asyncio.Semaphore(10)
-            async def _limited(coro):
-                async with sem:
-                    return await coro
-            await asyncio.gather(*[_limited(t) for t in sync_tasks])
+        trend_tf = (
+            getattr(self._strategy, "trend_timeframe", None)
+            or getattr(self._strategy, "h1_timeframe", "1h")
+        ) if getattr(self._strategy, "is_mtf", False) else None
 
         results: list[ScanResultItem] = []
+        processed_pairs = 0
+        reason_counts: dict[str, int] = {}
         new_threshold = (
             datetime.utcnow() - timedelta(minutes=max(0, int(only_new_signals_minutes)))
             if only_new_signals_minutes > 0
             else None
         )
-        for pair in filtered:
+        total_pairs = len(filtered)
+        for index, pair in enumerate(filtered, start=1):
             symbol = pair["symbol"]
+            if auto_sync:
+                await self._safe_sync(symbol, timeframe, lookback_days, market, pair.get("symbol"))
+                if trend_tf and trend_tf != timeframe:
+                    await self._safe_sync(symbol, trend_tf, lookback_days, market, pair.get("symbol"))
+                await self._report_progress(progress_callback, index, total_pairs, len(results), "history")
+
             candles = await self._candle_repository.latest(symbol, timeframe, limit=lookback)
             if len(candles) < lookback:
+                reason_counts["no_candles_in_db"] = reason_counts.get("no_candles_in_db", 0) + 1
+                await self._report_progress(progress_callback, index, total_pairs, len(results), "analysis")
                 continue
+            processed_pairs += 1
 
             data = candles_to_df(candles)
             context: dict | None = None
@@ -124,11 +140,20 @@ class MarketScanService:
                         "h1_data": candles_to_df(trend_candles),  # legacy compat
                         "timeframe": timeframe,
                     }
+                else:
+                    reason_counts["no_trend_data_or_insufficient"] = reason_counts.get("no_trend_data_or_insufficient", 0) + 1
+                    await self._report_progress(progress_callback, index, total_pairs, len(results), "analysis")
+                    continue
             elif context is None:
                 context = {"timeframe": timeframe}
 
             signal_payload = self._strategy.evaluate(data, context)
             if not signal_payload:
+                debug = self._strategy.explain(data, context)
+                reasons = list(debug.get("reasons") or [])
+                primary = reasons[0] if reasons else "no_signal_components"
+                reason_counts[primary] = reason_counts.get(primary, 0) + 1
+                await self._report_progress(progress_callback, index, total_pairs, len(results), "analysis")
                 continue
 
             signal_type = signal_payload["signal_type"]
@@ -141,6 +166,8 @@ class MarketScanService:
                     since=new_threshold,
                 )
                 if is_duplicate_recent:
+                    reason_counts["duplicate_recent"] = reason_counts.get("duplicate_recent", 0) + 1
+                    await self._report_progress(progress_callback, index, total_pairs, len(results), "analysis")
                     continue
 
             if store_signals:
@@ -185,9 +212,33 @@ class MarketScanService:
                     is_new=bool(new_threshold is not None and not is_duplicate_recent),
                 )
             )
+            await self._report_progress(progress_callback, index, total_pairs, len(results), "analysis")
 
         results.sort(key=lambda item: item.rank, reverse=True)
-        return results[:limit]
+        limited = results[:limit]
+        return limited, ScanRunStats(
+            mode=mode,
+            selected_symbol=selected_symbol or None,
+            universe_pairs=universe_pairs,
+            eligible_pairs=eligible_pairs,
+            processed_pairs=processed_pairs,
+            matched_signals=len(limited),
+            reason_counts=reason_counts,
+        )
+
+    async def _report_progress(
+        self,
+        callback: Callable[[int, int, int, str], Awaitable[None] | None] | None,
+        processed: int,
+        total: int,
+        matched: int,
+        phase: str,
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(processed, total, matched, phase)
+        if inspect.isawaitable(result):
+            await result
 
     async def _safe_sync(
         self,

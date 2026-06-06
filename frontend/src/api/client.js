@@ -3,6 +3,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     ...options,
   });
 
@@ -23,6 +24,25 @@ async function request(path, options = {}) {
   }
 
   return response.json();
+}
+
+export async function fetchAuthStatus() {
+  return request("/auth/status");
+}
+
+export async function requestAuthCode() {
+  return request("/auth/request-code", { method: "POST" });
+}
+
+export async function verifyAuthCode(code) {
+  return request("/auth/verify-code", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function logoutAuth() {
+  return request("/auth/logout", { method: "POST" });
 }
 
 export async function syncMarket(symbol, timeframe, lookbackDays, market, binanceSymbol, dataEnv) {
@@ -160,6 +180,10 @@ export async function runBacktest(payload) {
   });
 }
 
+export async function fetchBacktestStatus() {
+  return request("/analysis/backtest-status");
+}
+
 export async function explainAnalysis(payload) {
   return request("/analysis/explain", {
     method: "POST",
@@ -219,4 +243,49 @@ export async function fetchAccountTrades(market = "spot", tradeEnv = "testnet", 
   const params = new URLSearchParams({ market, trade_env: tradeEnv, limit: String(limit) });
   if (symbol) params.set("symbol", symbol);
   return request(`/account/trades?${params.toString()}`);
+}
+
+export async function fetchAutomationState() {
+  return request("/automation");
+}
+
+export async function updateAutomationConfig(payload) {
+  return request("/automation/configure", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function enableAutomation() {
+  return request("/automation/enable", { method: "POST" });
+}
+
+export async function disableAutomation() {
+  return request("/automation/disable", { method: "POST" });
+}
+
+export async function runAutomationNow() {
+  return request("/automation/run", { method: "POST" });
+}
+
+export async function approveAutomationSignal(signalId) {
+  return request(`/automation/pending/${signalId}/approve`, { method: "POST" });
+}
+
+export async function rejectAutomationSignal(signalId) {
+  return request(`/automation/pending/${signalId}/reject`, { method: "POST" });
+}
+
+export async function setAutomationMode(mode) {
+  return request("/automation/mode", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export async function setAutomationTradeEnv(trade_env) {
+  return request("/automation/trade-env", {
+    method: "POST",
+    body: JSON.stringify({ trade_env }),
+  });
 }
