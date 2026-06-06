@@ -196,8 +196,8 @@ class _AdaptiveIndicatorStub:
     def ema(self, close: pd.Series, period: int) -> pd.Series:
         if period == 26:
             values = [self._ema26_prev_value] * len(close)
-            if len(values) >= 4:
-                values[-4:] = [self._ema26_value] * 4
+            if values:
+                values[-1] = self._ema26_value
             return pd.Series(values)
         return pd.Series([self._ema200_value] * len(close))
 
@@ -257,6 +257,11 @@ class _AdaptiveChartPatternStub:
         ]
 
 
+class _EmptyAdaptiveChartPatternStub:
+    def detect(self, data: pd.DataFrame) -> list[dict]:
+        return []
+
+
 class _AdaptiveDivergenceStub:
     def __init__(self, bullish: bool = True) -> None:
         self._bullish = bullish
@@ -313,6 +318,33 @@ def _build_adaptive_strategy(
         filters=StrategyFilters(
             min_confidence=0.35,
             min_confirmations=2,
+            allow_candidate_patterns=True,
+            quality_mode="balanced",
+        ),
+    )
+
+
+def _build_adaptive_strategy_without_pattern() -> AdaptivePatternConfluenceStrategy:
+    return AdaptivePatternConfluenceStrategy(
+        indicator_service=_AdaptiveIndicatorStub(
+            ema26_value=102.0,
+            ema200_value=101.5,
+            atr_value=1.0,
+            ema26_prev_value=100.5,
+        ),
+        pattern_service=_AdaptivePatternServiceStub(),
+        chart_pattern_service=_EmptyAdaptiveChartPatternStub(),
+        divergence_service=_AdaptiveDivergenceStub(bullish=True),
+        support_resistance_service=_AdaptiveSRStub(),
+        fibonacci_service=_AdaptiveFibStub(),
+        elliott_wave_service=_AdaptiveElliottStub(),
+        trade_plan_service=_TradePlanStub(),
+        filters=StrategyFilters(
+            min_confidence=0.35,
+            min_confirmations=1,
+            require_pattern=False,
+            require_volume_confirm=False,
+            min_reward_risk=2.2,
             allow_candidate_patterns=True,
             quality_mode="balanced",
         ),
@@ -433,6 +465,19 @@ def test_adaptive_strategy_allows_candidate_pattern_when_confluence_is_strong() 
     assert payload["signal_type"] == "long"
     assert payload["meta"]["setup"]["state"] == "candidate"
     assert payload["confidence"] >= 0.35
+
+
+def test_adaptive_strategy_finds_trend_confluence_without_chart_pattern() -> None:
+    prices = [100.0 + i * 0.02 for i in range(220)]
+    data = _make_ohlcv(prices)
+    strategy = _build_adaptive_strategy_without_pattern()
+
+    payload = strategy.evaluate(data, {"timeframe": "1h", "trend_data": data})
+
+    assert payload is not None
+    assert payload["signal_type"] == "long"
+    assert payload["meta"]["setup"]["state"] == "trend"
+    assert payload["meta"]["chart_pattern"] is None
 
 
 def test_adaptive_strategy_blocks_candidate_pattern_in_sniper_mode() -> None:

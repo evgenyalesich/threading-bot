@@ -81,9 +81,9 @@ class AutomationConfig:
     require_candle: bool = False
     require_volume_confirm: bool = False
     min_trend_strength: float = 0.12
-    min_reward_risk: float = 2.5
-    allow_candidate_patterns: bool = False
-    quality_mode: str = "sniper"
+    min_reward_risk: float = 2.2
+    allow_candidate_patterns: bool = True
+    quality_mode: str = "balanced"
     h1_timeframe: str = "1h"
     trend_timeframe: str = "4h"
     poll_interval_sec: int = 45
@@ -997,9 +997,9 @@ class AutomationRuntime:
             self.update_config(
                 min_confidence=0.55,
                 min_confirmations=2,
-                require_pattern=True,
-                require_volume_confirm=True,
-                min_reward_risk=3.0,
+                require_pattern=False,
+                require_volume_confirm=False,
+                min_reward_risk=2.8,
                 allow_candidate_patterns=False,
                 quality_mode="sniper",
             )
@@ -1020,8 +1020,8 @@ class AutomationRuntime:
             min_confirmations=1,
             require_pattern=False,
             require_volume_confirm=False,
-            min_reward_risk=2.5,
-            allow_candidate_patterns=False,
+            min_reward_risk=2.2,
+            allow_candidate_patterns=True,
             quality_mode="balanced",
         )
 

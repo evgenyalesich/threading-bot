@@ -23,9 +23,9 @@ class BacktestRequest(BaseSchema):
     require_candle: bool = False
     require_volume_confirm: bool = False
     min_trend_strength: float = 0.12
-    min_reward_risk: float = 2.5
-    allow_candidate_patterns: bool = False
-    quality_mode: str = "sniper"
+    min_reward_risk: float = 2.2
+    allow_candidate_patterns: bool = True
+    quality_mode: str = "balanced"
     initial_equity: float = 10000.0
     risk_per_trade: float = 0.01
     fee_bps: float = 4.0

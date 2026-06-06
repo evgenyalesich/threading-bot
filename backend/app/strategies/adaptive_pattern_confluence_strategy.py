@@ -253,15 +253,15 @@ class AdaptivePatternConfluenceStrategy(BaseStrategy):
         if str(self._filters.quality_mode).lower() == "sniper":
             min_required_confirmations = max(min_required_confirmations, 4)
 
+        if self._filters.require_pattern and not pattern_pick:
+            debug["reasons"].append("pattern_required")
+            return None, debug
         if confirmations < min_required_confirmations:
             debug["reasons"].append("confirmations_below_min")
             return None, debug
 
         if confidence < self._filters.min_confidence:
             debug["reasons"].append("confidence_below_min")
-            return None, debug
-        if self._filters.require_pattern and not pattern_pick:
-            debug["reasons"].append("pattern_required")
             return None, debug
         if self._filters.require_divergence and divergence_bias != direction_sign:
             debug["reasons"].append("divergence_required")
@@ -308,10 +308,14 @@ class AdaptivePatternConfluenceStrategy(BaseStrategy):
             if not confluence_ok:
                 debug["reasons"].append("sniper_requires_confluence")
                 return None, debug
-            if not volume_confirm:
-                debug["reasons"].append("sniper_requires_volume")
-                return None, debug
-            if divergence_bias != direction_sign and candle_bias != direction_sign:
+            if not any(
+                [
+                    volume_confirm,
+                    breakout_align,
+                    divergence_bias == direction_sign,
+                    candle_bias == direction_sign,
+                ]
+            ):
                 debug["reasons"].append("sniper_requires_extra_confirmation")
                 return None, debug
 
