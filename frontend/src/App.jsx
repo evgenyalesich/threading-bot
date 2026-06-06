@@ -325,6 +325,8 @@ export default function App() {
   const [requireDivergence, setRequireDivergence] = useState(false);
   const [requireCandle, setRequireCandle] = useState(false);
   const [requireVolumeConfirm, setRequireVolumeConfirm] = useState(false);
+  const [requireTrendFilter, setRequireTrendFilter] = useState(true);
+  const [confluenceTolerance, setConfluenceTolerance] = useState(0);
   const [backtestStats, setBacktestStats] = useState(null);
   const [backtestTrades, setBacktestTrades] = useState([]);
   const [backtestMeta, setBacktestMeta] = useState(null);
@@ -1352,6 +1354,8 @@ export default function App() {
           require_divergence: requireDivergence,
           require_candle: requireCandle,
           require_volume_confirm: requireVolumeConfirm,
+          require_trend_filter: requireTrendFilter,
+          confluence_tolerance: Number(confluenceTolerance) || 0,
           leverage: market === "futures" ? leverage : null,
         }
       );
@@ -1399,6 +1403,8 @@ export default function App() {
             require_divergence: requireDivergence,
             require_candle: requireCandle,
             require_volume_confirm: requireVolumeConfirm,
+            require_trend_filter: requireTrendFilter,
+            confluence_tolerance: Number(confluenceTolerance) || 0,
           });
           const debug = explained.debug ?? null;
           setAnalysisDebug(debug);
@@ -1452,6 +1458,8 @@ export default function App() {
         require_divergence: requireDivergence,
         require_candle: requireCandle,
         require_volume_confirm: requireVolumeConfirm,
+        require_trend_filter: requireTrendFilter,
+        confluence_tolerance: Number(confluenceTolerance) || 0,
       });
       setBacktestStats(response.stats ?? null);
       setBacktestTrades(response.trades ?? []);
@@ -1599,6 +1607,8 @@ export default function App() {
         require_divergence: requireDivergence,
         require_candle: requireCandle,
         require_volume_confirm: requireVolumeConfirm,
+        require_trend_filter: requireTrendFilter,
+        confluence_tolerance: Number(confluenceTolerance) || 0,
       });
       setScanResults(response.signals ?? []);
       setScanMeta({
@@ -1745,8 +1755,11 @@ export default function App() {
         require_divergence: requireDivergence,
         require_candle: requireCandle,
         require_volume_confirm: requireVolumeConfirm,
+        require_trend_filter: requireTrendFilter,
+        confluence_tolerance: Number(confluenceTolerance) || 0,
         h1_timeframe: h1Timeframe,
         trend_timeframe: trendTimeframe,
+        strategy,
         mode,
       });
       setAutomationState(snapshot);
@@ -2031,6 +2044,8 @@ export default function App() {
               requireDivergence={requireDivergence}
               requireCandle={requireCandle}
               requireVolumeConfirm={requireVolumeConfirm}
+              requireTrendFilter={requireTrendFilter}
+              confluenceTolerance={confluenceTolerance}
               autoSync={scanAutoSync}
               onlyNewSignalsMinutes={onlyNewSignalsMinutes}
               onLimitChange={setScanLimit}
@@ -2042,6 +2057,8 @@ export default function App() {
               onRequireDivergenceChange={setRequireDivergence}
               onRequireCandleChange={setRequireCandle}
               onRequireVolumeConfirmChange={setRequireVolumeConfirm}
+              onRequireTrendFilterChange={setRequireTrendFilter}
+              onConfluenceToleranceChange={setConfluenceTolerance}
               onAutoSyncChange={setScanAutoSync}
               onOnlyNewSignalsMinutesChange={setOnlyNewSignalsMinutes}
               onModeChange={setScanMode}

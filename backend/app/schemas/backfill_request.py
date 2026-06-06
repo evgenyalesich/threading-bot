@@ -20,3 +20,5 @@ class BackfillRequest(BaseSchema):
     min_reward_risk: float = 2.2
     allow_candidate_patterns: bool = True
     quality_mode: str = "balanced"
+    require_trend_filter: bool = True
+    confluence_tolerance: float | None = None

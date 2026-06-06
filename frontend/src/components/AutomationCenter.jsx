@@ -89,6 +89,11 @@ export default function AutomationCenter({
           <small>{state?.timeframe || "--"} · {state?.market || "--"} · {state?.quote || "ALL"}</small>
         </div>
         <div className="automation-card">
+          <span>Стратегия</span>
+          <strong>{state?.strategy || "--"}</strong>
+          <small>trend filter {state?.require_trend_filter ? "ON" : "OFF"} · tolerance {state?.confluence_tolerance || "ATR"}</small>
+        </div>
+        <div className="automation-card">
           <span>Live state</span>
           <strong>{(state?.live_state || "--").toUpperCase()}</strong>
           <small>{state?.live_message || state?.last_no_signal_reason || "--"}</small>

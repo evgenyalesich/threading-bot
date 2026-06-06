@@ -79,7 +79,7 @@ class ThreeScreensStrategy(BaseStrategy):
         trend_atr_now = float(trend_atr.iloc[-1])
         trend_slope = abs(ema26_now - ema26_prev)
         min_trend_slope = trend_atr_now * 0.08
-        if trend_atr_now > 0 and trend_slope < min_trend_slope:
+        if self._filters.require_trend_filter and trend_atr_now > 0 and trend_slope < min_trend_slope:
             debug["reasons"].append("trend_too_flat")
             debug["trend_slope"] = trend_slope
             debug["min_trend_slope"] = min_trend_slope
@@ -91,12 +91,12 @@ class ThreeScreensStrategy(BaseStrategy):
             ema200 = self._ind.ema(trend_close, 200)
             ema200_val = float(ema200.iloc[-1])
             current_price = float(trend_close.iloc[-1])
-            if h1_trend == 1 and current_price < ema200_val:
+            if self._filters.require_trend_filter and h1_trend == 1 and current_price < ema200_val:
                 debug["reasons"].append("below_ema200_no_long")
                 debug["h1_trend"] = h1_trend
                 debug["ema200"] = ema200_val
                 return None, debug
-            if h1_trend == -1 and current_price > ema200_val:
+            if self._filters.require_trend_filter and h1_trend == -1 and current_price > ema200_val:
                 debug["reasons"].append("above_ema200_no_short")
                 debug["h1_trend"] = h1_trend
                 debug["ema200"] = ema200_val
@@ -154,6 +154,11 @@ class ThreeScreensStrategy(BaseStrategy):
             "atr": last_atr,
             "atr_avg": atr_avg,
             "body_ratio": body_ratio,
+            "filters": {
+                "min_confidence": self._filters.min_confidence,
+                "min_confirmations": self._filters.min_confirmations,
+                "require_trend_filter": self._filters.require_trend_filter,
+            },
         })
 
         confirmations = int(stoch_confirm) + int(rsi_confirm)

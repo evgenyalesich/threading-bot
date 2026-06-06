@@ -10,6 +10,7 @@ from app.schemas.signal_read import SignalRead
 class AutomationConfigUpdate(BaseSchema):
     enabled: bool | None = None
     mode: str | None = None
+    strategy: str | None = None
     symbol: str | None = None
     scan_market_wide: bool | None = None
     quote: str | None = None
@@ -35,6 +36,8 @@ class AutomationConfigUpdate(BaseSchema):
     min_reward_risk: float | None = None
     allow_candidate_patterns: bool | None = None
     quality_mode: str | None = None
+    require_trend_filter: bool | None = None
+    confluence_tolerance: float | None = None
     h1_timeframe: str | None = None
     trend_timeframe: str | None = None
     poll_interval_sec: int | None = None
@@ -42,6 +45,7 @@ class AutomationConfigUpdate(BaseSchema):
 
 class AutomationModeUpdate(BaseSchema):
     mode: str
+    strategy: str
 
 
 class AutomationTradeEnvUpdate(BaseSchema):
@@ -103,6 +107,8 @@ class AutomationStateRead(BaseSchema):
     min_reward_risk: float
     allow_candidate_patterns: bool
     quality_mode: str
+    require_trend_filter: bool
+    confluence_tolerance: float | None = None
     h1_timeframe: str
     trend_timeframe: str
     poll_interval_sec: int

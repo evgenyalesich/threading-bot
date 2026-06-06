@@ -68,7 +68,10 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
             return None, debug
 
         close = data["close"].astype(float)
+        high = data["high"].astype(float)
+        low = data["low"].astype(float)
         ema200 = self._indicator_service.ema(close, 200)
+        atr = self._indicator_service.atr(high, low, close, period=14)
         rsi = self._indicator_service.rsi(close)
         divergence = self._divergence_service.detect(data, rsi)
         candle_hits = self._pattern_service.scan_latest(data)
@@ -116,6 +119,8 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
                     "require_divergence": self._filters.require_divergence,
                     "require_candle": self._filters.require_candle,
                     "require_volume_confirm": self._filters.require_volume_confirm,
+                    "require_trend_filter": self._filters.require_trend_filter,
+                    "confluence_tolerance": self._filters.confluence_tolerance,
                 },
             }
         )
@@ -144,7 +149,7 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
 
         debug.update({"side": side, "confirmations": confirmations})
 
-        if trend_bias != direction_sign:
+        if self._filters.require_trend_filter and trend_bias != direction_sign:
             debug["reasons"].append("trend_mismatch_ema200")
             return None, debug
         if confirmations < self._filters.min_confirmations:
@@ -157,6 +162,7 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
             if key in self._KEY_FIB_LEVELS
         }
         confluence_levels = list(key_fib_levels.values()) + [float(ema200.iloc[-1])]
+        confluence_tolerance = self._dynamic_confluence_tolerance(last_close, float(atr.iloc[-1]))
         nearest_confluence = min(
             (abs(last_close - level) / max(last_close, 1e-9) for level in confluence_levels),
             default=1.0,
@@ -165,10 +171,10 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
             {
                 "key_fib_levels": key_fib_levels,
                 "nearest_confluence_distance": nearest_confluence,
-                "confluence_tolerance": self._CONFLUENCE_TOLERANCE,
+                "confluence_tolerance": confluence_tolerance,
             }
         )
-        if nearest_confluence > self._CONFLUENCE_TOLERANCE:
+        if nearest_confluence > confluence_tolerance:
             debug["reasons"].append("no_fib_ema_confluence")
             return None, debug
 
@@ -267,3 +273,12 @@ class Ema200FibDivergenceStrategy(BaseStrategy):
         }
 
         return payload, debug
+
+    def _dynamic_confluence_tolerance(self, entry: float, atr: float) -> float:
+        override = self._filters.confluence_tolerance
+        if override is not None and override > 0:
+            return float(override)
+        if entry <= 0:
+            return self._CONFLUENCE_TOLERANCE
+        atr_ratio = atr / entry if atr > 0 else 0.0
+        return min(max(self._CONFLUENCE_TOLERANCE, atr_ratio * 1.8), 0.025)

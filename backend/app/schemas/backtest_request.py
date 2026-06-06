@@ -26,6 +26,8 @@ class BacktestRequest(BaseSchema):
     min_reward_risk: float = 2.2
     allow_candidate_patterns: bool = True
     quality_mode: str = "balanced"
+    require_trend_filter: bool = True
+    confluence_tolerance: float | None = None
     initial_equity: float = 10000.0
     risk_per_trade: float = 0.01
     fee_bps: float = 4.0

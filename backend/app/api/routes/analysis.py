@@ -25,21 +25,13 @@ from app.services.market_data_service import MarketDataService
 from app.services.backtest_service import BacktestService
 from app.services.backtest_runtime import get_backtest_runtime
 from app.services.market_scan_service import MarketScanService
-from app.services.indicator_service import IndicatorService
 from app.services.signal_service import SignalService
 from app.services.symbol_resolver_service import SymbolResolverService
 from app.services.signal_backfill_service import SignalBackfillService
-from app.services.pattern_service import PatternService
-from app.services.chart_pattern_service import ChartPatternService
-from app.services.divergence_service import DivergenceService
-from app.services.support_resistance_service import SupportResistanceService
-from app.services.fibonacci_service import FibonacciService
-from app.services.elliott_wave_service import ElliottWaveService
-from app.services.trade_plan_service import TradePlanService
 from app.services.signal_execution_service import SignalExecutionConfig, SignalExecutionService
 from app.services.telegram_service import TelegramService
-from app.strategies.adaptive_pattern_confluence_strategy import AdaptivePatternConfluenceStrategy
 from app.strategies.base_strategy import BaseStrategy
+from app.strategies.factory import build_strategy
 from app.strategies.strategy_filters import StrategyFilters
 from app.utils.candle_frame import candles_to_df
 
@@ -72,28 +64,23 @@ def _strategy_filters_from_payload(payload) -> StrategyFilters:
         min_reward_risk=float(getattr(payload, "min_reward_risk", defaults.min_reward_risk)),
         allow_candidate_patterns=bool(getattr(payload, "allow_candidate_patterns", defaults.allow_candidate_patterns)),
         quality_mode=str(getattr(payload, "quality_mode", defaults.quality_mode)),
-    )
-
-
-def _build_adaptive_pattern_confluence_strategy(filters: StrategyFilters) -> AdaptivePatternConfluenceStrategy:
-    return AdaptivePatternConfluenceStrategy(
-        indicator_service=IndicatorService(),
-        pattern_service=PatternService(),
-        chart_pattern_service=ChartPatternService(),
-        divergence_service=DivergenceService(),
-        support_resistance_service=SupportResistanceService(),
-        fibonacci_service=FibonacciService(),
-        elliott_wave_service=ElliottWaveService(),
-        trade_plan_service=TradePlanService(),
-        filters=filters,
+        require_trend_filter=bool(getattr(payload, "require_trend_filter", defaults.require_trend_filter)),
+        confluence_tolerance=(
+            float(getattr(payload, "confluence_tolerance"))
+            if getattr(payload, "confluence_tolerance", None) not in {None, ""}
+            else defaults.confluence_tolerance
+        ),
     )
 
 
 def _build_strategy_from_payload(payload) -> BaseStrategy:
     filters = _strategy_filters_from_payload(payload)
-    # Keep legacy strategy names as aliases, but route everything through the single
-    # main production strategy so the app stays focused and predictable.
-    return _build_adaptive_pattern_confluence_strategy(filters)
+    return build_strategy(
+        getattr(payload, "strategy", "adaptive_pattern_confluence"),
+        filters=filters,
+        h1_timeframe=str(getattr(payload, "h1_timeframe", "1h")),
+        trend_timeframe=str(getattr(payload, "trend_timeframe", "4h")),
+    )
 
 
 @router.get("/backtest-status")

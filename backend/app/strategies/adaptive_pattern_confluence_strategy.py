@@ -147,10 +147,10 @@ class AdaptivePatternConfluenceStrategy(BaseStrategy):
             return None, debug
         direction_sign = 1 if side == "long" else -1
 
-        if trend_bias == 0:
+        if self._filters.require_trend_filter and trend_bias == 0:
             debug["reasons"].append("higher_timeframe_bias_missing")
             return None, debug
-        if trend_bias != direction_sign:
+        if self._filters.require_trend_filter and trend_bias != direction_sign:
             debug["reasons"].append("higher_timeframe_mismatch")
             return None, debug
 
@@ -194,6 +194,7 @@ class AdaptivePatternConfluenceStrategy(BaseStrategy):
                     "require_divergence": self._filters.require_divergence,
                     "require_candle": self._filters.require_candle,
                     "require_volume_confirm": self._filters.require_volume_confirm,
+                    "require_trend_filter": self._filters.require_trend_filter,
                 },
             }
         )

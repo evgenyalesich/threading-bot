@@ -20,6 +20,14 @@ function modeDescription(mode) {
     : "Бот ищет входы, а ты подтверждаешь сделку вручную.";
 }
 
+function strategyLabel(strategy) {
+  return {
+    adaptive_pattern_confluence: "Adaptive Pattern + EMA/Fib",
+    three_screens: "Три экрана Элдера",
+    ema200_fib_divergence: "EMA200 + Фибо + Дивергенция",
+  }[strategy] || strategy;
+}
+
 export default function ControlPanel({
   lookbackDays,
   market,
@@ -66,6 +74,8 @@ export default function ControlPanel({
   requireDivergence,
   requireCandle,
   requireVolumeConfirm,
+  requireTrendFilter,
+  confluenceTolerance,
   onLookbackChange,
   onMarketChange,
   onDataEnvChange,
@@ -111,6 +121,8 @@ export default function ControlPanel({
   onRequireDivergenceChange,
   onRequireCandleChange,
   onRequireVolumeConfirmChange,
+  onRequireTrendFilterChange,
+  onConfluenceToleranceChange,
   h1Timeframe,
   onH1TimeframeChange,
   trendTimeframe,
@@ -165,7 +177,7 @@ export default function ControlPanel({
           <span>{market === "futures" ? "Futures" : "Spot"}</span>
           <span>{tradeEnv === "real" ? "Real trade" : "Testnet trade"}</span>
           <span>{dataEnv === "real" ? "Real feed" : "Testnet feed"}</span>
-          <span>{strategy === "adaptive_pattern_confluence" ? "EMA200 + Adaptive Pattern" : strategy}</span>
+          <span>{strategyLabel(strategy)}</span>
         </div>
         <div className="mode-switcher">
           <button
@@ -430,7 +442,9 @@ export default function ControlPanel({
           <div className="control-group">
             <label>Стратегия</label>
             <select value={strategy} onChange={(event) => onStrategyChange(event.target.value)}>
-              <option value="adaptive_pattern_confluence">EMA200 + Adaptive Pattern</option>
+              <option value="adaptive_pattern_confluence">Adaptive Pattern + EMA/Fib</option>
+              <option value="three_screens">Три экрана Элдера</option>
+              <option value="ema200_fib_divergence">EMA200 + Фибо + Дивергенция</option>
             </select>
           </div>
           <div className="control-group">
@@ -471,8 +485,21 @@ export default function ControlPanel({
               onChange={(event) => onMinConfirmationsChange(Number(event.target.value) || 0)}
             />
           </div>
+          <div className="control-group">
+            <label>EMA/Fib tolerance</label>
+            <input
+              type="number"
+              step="0.001"
+              min="0"
+              max="0.05"
+              value={confluenceTolerance}
+              onChange={(event) => onConfluenceToleranceChange(Number(event.target.value) || 0)}
+            />
+            <small>0 = динамически по ATR</small>
+          </div>
         </div>
         <div className="toggle-grid">
+          <label className="toggle-row"><input type="checkbox" checked={requireTrendFilter} onChange={(event) => onRequireTrendFilterChange(event.target.checked)} /><span>Требовать тренд EMA200/26</span></label>
           <label className="toggle-row"><input type="checkbox" checked={requirePattern} onChange={(event) => onRequirePatternChange(event.target.checked)} /><span>Требовать фигуру</span></label>
           <label className="toggle-row"><input type="checkbox" checked={requireDivergence} onChange={(event) => onRequireDivergenceChange(event.target.checked)} /><span>Требовать дивергенцию</span></label>
           <label className="toggle-row"><input type="checkbox" checked={requireCandle} onChange={(event) => onRequireCandleChange(event.target.checked)} /><span>Требовать свечной паттерн</span></label>

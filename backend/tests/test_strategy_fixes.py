@@ -8,6 +8,7 @@ import pytest
 
 from app.services.backtest_service import BacktestService, BacktestTrade
 from app.strategies.adaptive_pattern_confluence_strategy import AdaptivePatternConfluenceStrategy
+from app.strategies.factory import build_strategy
 from app.services.divergence_service import DivergenceService
 from app.services.fibonacci_service import FibonacciService
 from app.services.order_sizing_service import OrderSizingService
@@ -120,6 +121,9 @@ class _IndicatorStub:
 
     def rsi(self, close: pd.Series) -> pd.Series:
         return pd.Series([50.0] * len(close))
+
+    def atr(self, high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+        return pd.Series([1.0] * len(close))
 
 
 class _PatternStub:
@@ -377,6 +381,18 @@ def test_strategy_requires_fib_or_ema_confluence() -> None:
     far_strategy = _build_strategy({"0.5": 97.0, "0.618": 96.5, "0.786": 96.0}, ema_value=95.0)
     far_signal = far_strategy.evaluate(data)
     assert far_signal is None
+
+
+def test_strategy_factory_builds_selected_strategy() -> None:
+    filters = StrategyFilters()
+
+    adaptive = build_strategy("adaptive_pattern_confluence", filters=filters)
+    three_screens = build_strategy("three_screens", filters=filters)
+    ema_fib = build_strategy("ema200_fib_divergence", filters=filters)
+
+    assert adaptive.name == "adaptive_pattern_confluence"
+    assert three_screens.name == "three_screens"
+    assert ema_fib.name == "ema200_fib_divergence"
 
 
 def test_strategy_risk_levels_match_trade_plan_levels() -> None:

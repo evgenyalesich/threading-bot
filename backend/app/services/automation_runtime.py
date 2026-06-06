@@ -19,23 +19,15 @@ from app.schemas.order_read import OrderRead
 from app.schemas.signal_read import SignalRead
 from app.services.binance_candle_service import BinanceCandleService
 from app.services.binance_market_service import BinanceMarketService
-from app.services.chart_pattern_service import ChartPatternService
-from app.services.divergence_service import DivergenceService
-from app.services.elliott_wave_service import ElliottWaveService
-from app.services.fibonacci_service import FibonacciService
-from app.services.indicator_service import IndicatorService
 from app.services.market_data_service import MarketDataService
 from app.services.market_scan_service import MarketScanService, ScanRunStats
 from app.services.order_sync_service import OrderSyncService
-from app.services.pattern_service import PatternService
 from app.services.signal_execution_service import (
     SignalExecutionConfig,
     SignalExecutionService,
 )
-from app.services.support_resistance_service import SupportResistanceService
 from app.services.telegram_service import TelegramService
-from app.services.trade_plan_service import TradePlanService
-from app.strategies.adaptive_pattern_confluence_strategy import AdaptivePatternConfluenceStrategy
+from app.strategies.factory import build_strategy
 from app.strategies.strategy_filters import StrategyFilters
 from app.utils.candle_frame import candles_to_df
 from app.utils.jsonable import to_jsonable
@@ -59,6 +51,7 @@ def _normalize_mode(value: str | None) -> str:
 class AutomationConfig:
     enabled: bool = False
     mode: str = "semi"
+    strategy: str = "adaptive_pattern_confluence"
     symbol: str = "BTCUSDT"
     scan_market_wide: bool = True
     quote: str = ""
@@ -84,6 +77,8 @@ class AutomationConfig:
     min_reward_risk: float = 2.2
     allow_candidate_patterns: bool = True
     quality_mode: str = "balanced"
+    require_trend_filter: bool = True
+    confluence_tolerance: float | None = None
     h1_timeframe: str = "1h"
     trend_timeframe: str = "4h"
     poll_interval_sec: int = 45
@@ -178,7 +173,16 @@ class AutomationRuntime:
                 value = _normalize_mode(value)
             if key in {"symbol"}:
                 value = str(value).upper().replace("-", "")
-            if key in {"timeframe", "market", "data_env", "trade_env", "h1_timeframe", "trend_timeframe", "quality_mode"}:
+            if key in {
+                "timeframe",
+                "market",
+                "data_env",
+                "trade_env",
+                "h1_timeframe",
+                "trend_timeframe",
+                "quality_mode",
+                "strategy",
+            }:
                 value = str(value).lower()
             if key == "quote":
                 value = str(value).upper()
@@ -262,6 +266,7 @@ class AutomationRuntime:
             live_state=self._live_state,
             live_message=self._live_message,
             mode=self._config.mode,
+            strategy=self._config.strategy,
             symbol=self._config.symbol,
             scan_market_wide=self._config.scan_market_wide,
             quote=self._config.quote,
@@ -287,6 +292,8 @@ class AutomationRuntime:
             min_reward_risk=self._config.min_reward_risk,
             allow_candidate_patterns=self._config.allow_candidate_patterns,
             quality_mode=self._config.quality_mode,
+            require_trend_filter=self._config.require_trend_filter,
+            confluence_tolerance=self._config.confluence_tolerance,
             h1_timeframe=self._config.h1_timeframe,
             trend_timeframe=self._config.trend_timeframe,
             poll_interval_sec=self._config.poll_interval_sec,
@@ -491,20 +498,15 @@ class AutomationRuntime:
             min_reward_risk=config.min_reward_risk,
             allow_candidate_patterns=config.allow_candidate_patterns,
             quality_mode=config.quality_mode,
+            require_trend_filter=config.require_trend_filter,
+            confluence_tolerance=config.confluence_tolerance,
         )
-        strategy = AdaptivePatternConfluenceStrategy(
-            indicator_service=IndicatorService(),
-            pattern_service=PatternService(),
-            chart_pattern_service=ChartPatternService(),
-            divergence_service=DivergenceService(),
-            support_resistance_service=SupportResistanceService(),
-            fibonacci_service=FibonacciService(),
-            elliott_wave_service=ElliottWaveService(),
-            trade_plan_service=TradePlanService(),
+        strategy = build_strategy(
+            config.strategy,
             filters=filters,
+            h1_timeframe=config.h1_timeframe,
+            trend_timeframe=config.trend_timeframe,
         )
-        strategy.h1_timeframe = config.h1_timeframe
-        strategy.trend_timeframe = config.trend_timeframe
 
         if config.scan_market_wide:
             market_service = BinanceMarketService(effective_settings)
@@ -761,8 +763,10 @@ class AutomationRuntime:
             f"Состояние: {self._live_state_label(snapshot.live_state)}\n"
             f"{snapshot.live_message or '--'}\n\n"
             f"Рынок: {snapshot.market.upper()} · {universe}\n"
+            f"Стратегия: {snapshot.strategy}\n"
             f"Вход: {snapshot.timeframe} · Тренд: {snapshot.trend_timeframe}\n"
-            f"Риск: {self._risk_profile_label().upper()} · RR от 1:{snapshot.min_reward_risk:g}\n"
+            f"Риск: {self._risk_profile_label().upper()} · RR от 1:{snapshot.min_reward_risk:g} · "
+            f"Тренд-фильтр: {'ON' if snapshot.require_trend_filter else 'OFF'}\n"
             f"{amount_label}: ${snapshot.quote_amount or 0:.2f} · Плечо: x{snapshot.leverage or 1}\n\n"
             f"{progress}"
             f"{cycle_result}"
@@ -824,6 +828,8 @@ class AutomationRuntime:
             f"Confidence от: {round(snapshot.min_confidence * 100)}%\n"
             f"Подтверждений от: {snapshot.min_confirmations}\n"
             f"RR от: 1:{snapshot.min_reward_risk:g}\n"
+            f"Тренд EMA200/26 обязателен: {'да' if snapshot.require_trend_filter else 'нет'}\n"
+            f"EMA/Fib tolerance: {snapshot.confluence_tolerance or 'ATR dynamic'}\n"
             f"Фигура обязательна: {'да' if snapshot.require_pattern else 'нет'}\n"
             f"Объем обязателен: {'да' if snapshot.require_volume_confirm else 'нет'}\n\n"
             f"Сумма сделки: ${snapshot.quote_amount or 0:g}\n"
@@ -1071,6 +1077,7 @@ class AutomationRuntime:
                 min_reward_risk=2.8,
                 allow_candidate_patterns=False,
                 quality_mode="sniper",
+                require_trend_filter=True,
             )
             return
         if profile == "aggressive":
@@ -1082,6 +1089,7 @@ class AutomationRuntime:
                 min_reward_risk=2.0,
                 allow_candidate_patterns=True,
                 quality_mode="aggressive",
+                require_trend_filter=False,
             )
             return
         self.update_config(
@@ -1092,6 +1100,7 @@ class AutomationRuntime:
             min_reward_risk=2.2,
             allow_candidate_patterns=True,
             quality_mode="balanced",
+            require_trend_filter=True,
         )
 
     async def _telegram_loop(self) -> None:
@@ -1523,6 +1532,7 @@ class AutomationRuntime:
     def _config_snapshot_meta(self) -> dict:
         return {
             "symbol": self._config.symbol,
+            "strategy": self._config.strategy,
             "scan_market_wide": self._config.scan_market_wide,
             "quote": self._config.quote,
             "max_pairs": self._config.max_pairs,
