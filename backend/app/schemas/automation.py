@@ -45,7 +45,6 @@ class AutomationConfigUpdate(BaseSchema):
 
 class AutomationModeUpdate(BaseSchema):
     mode: str
-    strategy: str
 
 
 class AutomationTradeEnvUpdate(BaseSchema):
@@ -82,6 +81,7 @@ class AutomationStateRead(BaseSchema):
     live_state: str
     live_message: str | None = None
     mode: str
+    strategy: str
     symbol: str
     scan_market_wide: bool
     quote: str
