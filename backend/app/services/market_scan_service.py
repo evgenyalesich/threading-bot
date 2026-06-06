@@ -16,6 +16,7 @@ from app.services.market_data_service import MarketDataService
 from app.strategies.base_strategy import BaseStrategy
 from app.models.signal import Signal
 from app.utils.candle_frame import candles_to_df
+from app.utils.jsonable import to_jsonable
 
 
 @dataclass
@@ -175,11 +176,11 @@ class MarketScanService:
                     symbol=symbol,
                     timeframe=timeframe,
                     signal_type=signal_type,
-                    confidence=signal_payload["confidence"],
-                    entry_price=signal_payload.get("entry_price"),
-                    stop_loss=signal_payload.get("stop_loss"),
-                    take_profit=signal_payload.get("take_profit"),
-                    meta=signal_payload.get("meta"),
+                    confidence=to_jsonable(signal_payload["confidence"]),
+                    entry_price=to_jsonable(signal_payload.get("entry_price")),
+                    stop_loss=to_jsonable(signal_payload.get("stop_loss")),
+                    take_profit=to_jsonable(signal_payload.get("take_profit")),
+                    meta=to_jsonable(signal_payload.get("meta")),
                     rationale=signal_payload.get("rationale"),
                 )
                 signal = await self._signal_repository.add(signal)
@@ -188,11 +189,11 @@ class MarketScanService:
                     symbol=symbol,
                     timeframe=timeframe,
                     signal_type=signal_type,
-                    confidence=signal_payload["confidence"],
-                    entry_price=signal_payload.get("entry_price"),
-                    stop_loss=signal_payload.get("stop_loss"),
-                    take_profit=signal_payload.get("take_profit"),
-                    meta=signal_payload.get("meta"),
+                    confidence=to_jsonable(signal_payload["confidence"]),
+                    entry_price=to_jsonable(signal_payload.get("entry_price")),
+                    stop_loss=to_jsonable(signal_payload.get("stop_loss")),
+                    take_profit=to_jsonable(signal_payload.get("take_profit")),
+                    meta=to_jsonable(signal_payload.get("meta")),
                     rationale=signal_payload.get("rationale"),
                 )
 
