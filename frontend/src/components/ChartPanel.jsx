@@ -276,6 +276,12 @@ export default function ChartPanel({
 }) {
   const chartRef = useRef(null);
   const containerRef = useRef(null);
+  const volumeContainerRef = useRef(null);
+  const atrContainerRef = useRef(null);
+  const rsiContainerRef = useRef(null);
+  const volumeChartRef = useRef(null);
+  const atrChartRef = useRef(null);
+  const rsiChartRef = useRef(null);
   const seriesRef = useRef(null);
   const emaRef = useRef(null);
   const bbUpperRef = useRef(null);
@@ -302,6 +308,9 @@ export default function ChartPanel({
     () => resolvePrecision(candles, pricePrecision),
     [candles, pricePrecision]
   );
+  const visibleIndicatorCount = [showRsi, showAtr, showVolume].filter(Boolean).length;
+  const indicatorHeight = visibleIndicatorCount > 0 ? visibleIndicatorCount * 86 + 12 : 0;
+  const mainChartHeight = Math.max(height - indicatorHeight, 360);
   const emaData = useMemo(() => {
     if (indicatorData?.ema200?.length) {
       return indicatorData.ema200;
@@ -613,7 +622,7 @@ export default function ChartPanel({
         pinch: true,
         axisPressedMouseMove: true,
       },
-      height,
+      height: mainChartHeight,
     });
 
     const candleSeries = chart.addCandlestickSeries({
@@ -653,54 +662,11 @@ export default function ChartPanel({
       lineStyle: 2,
     });
 
-    const volumeSeries = chart.addHistogramSeries({
-      priceScaleId: "volume",
-      priceFormat: { type: "volume" },
-      base: 0,
-    });
-    chart.priceScale("volume").applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0.02 },
-      visible: false,
-      borderColor: "rgba(255,255,255,0.2)",
-    });
-
-    const atrSeries = chart.addLineSeries({
-      color: "#f59e0b",
-      lineWidth: 1,
-      priceScaleId: "atr",
-    });
-    chart.priceScale("atr").applyOptions({
-      scaleMargins: { top: 0.72, bottom: 0.12 },
-      visible: false,
-      borderColor: "rgba(255,255,255,0.2)",
-    });
-
-    const rsiSeries = chart.addLineSeries({
-      color: "#38bdf8",
-      lineWidth: 1,
-      priceScaleId: "rsi",
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-    chart.priceScale("rsi").applyOptions({
-      scaleMargins: { top: 0.62, bottom: 0.22 },
-      visible: false,
-      borderColor: "rgba(255,255,255,0.2)",
-    });
-    rsiSeries.applyOptions({
-      autoscaleInfoProvider: () => ({
-        priceRange: { minValue: 0, maxValue: 100 },
-      }),
-    });
-
     seriesRef.current = candleSeries;
     emaRef.current = emaSeries;
     bbUpperRef.current = bbUpper;
     bbMiddleRef.current = bbMiddle;
     bbLowerRef.current = bbLower;
-    volumeRef.current = volumeSeries;
-    atrRef.current = atrSeries;
-    rsiRef.current = rsiSeries;
     chartRef.current = chart;
 
     return () => {
@@ -728,36 +694,154 @@ export default function ChartPanel({
       bbLowerRef.current.setData(validValueSeries(bbands?.lower ?? []));
       bbLowerRef.current.applyOptions({ visible: showBBands });
     }
-    if (volumeRef.current) {
-      volumeRef.current.setData(validValueSeries(volumeData));
-      volumeRef.current.applyOptions({ visible: showVolume });
-    }
-    if (atrRef.current) {
-      atrRef.current.setData(validValueSeries(atrData));
-      atrRef.current.applyOptions({ visible: showAtr });
-    }
-    if (rsiRef.current) {
-      rsiRef.current.setData(validValueSeries(rsiData));
-      rsiRef.current.applyOptions({ visible: showRsi });
-    }
   }, [
     chartData,
     emaData,
     bbands,
-    volumeData,
-    atrData,
-    rsiData,
     showEma,
     showBBands,
-    showVolume,
-    showAtr,
-    showRsi,
   ]);
 
   useEffect(() => {
     if (!chartRef.current) return;
-    chartRef.current.applyOptions({ height });
-  }, [height]);
+    chartRef.current.applyOptions({ height: mainChartHeight });
+  }, [mainChartHeight]);
+
+  useEffect(() => {
+    const indicatorCharts = [
+      { ref: volumeChartRef, series: volumeRef },
+      { ref: atrChartRef, series: atrRef },
+      { ref: rsiChartRef, series: rsiRef },
+    ];
+    indicatorCharts.forEach(({ ref, series }) => {
+      if (ref.current) {
+        ref.current.remove();
+      }
+      ref.current = null;
+      series.current = null;
+    });
+
+    const createIndicatorChart = (target, label) => {
+      if (!target) return null;
+      const chart = createChart(target, {
+        height: 78,
+        layout: {
+          background: { color: "transparent" },
+          textColor: "#8aa0b7",
+        },
+        grid: {
+          vertLines: { color: "rgba(255,255,255,0.035)" },
+          horzLines: { color: "rgba(255,255,255,0.045)" },
+        },
+        rightPriceScale: {
+          borderColor: "rgba(148,163,184,0.16)",
+          scaleMargins: { top: 0.18, bottom: 0.16 },
+        },
+        leftPriceScale: { visible: false },
+        timeScale: {
+          visible: false,
+          borderVisible: false,
+        },
+        crosshair: { mode: 1 },
+        handleScroll: false,
+        handleScale: false,
+        localization: {
+          priceFormatter: (price) => {
+            if (label === "RSI") return Number(price).toFixed(0);
+            if (label === "VOL") return Number(price).toFixed(0);
+            return Number(price).toFixed(2);
+          },
+        },
+      });
+      return chart;
+    };
+
+    if (showVolume) {
+      const chart = createIndicatorChart(volumeContainerRef.current, "VOL");
+      if (chart) {
+        const series = chart.addHistogramSeries({
+          color: "rgba(34,197,94,0.58)",
+          priceFormat: { type: "volume" },
+          base: 0,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        volumeChartRef.current = chart;
+        volumeRef.current = series;
+      }
+    }
+
+    if (showAtr) {
+      const chart = createIndicatorChart(atrContainerRef.current, "ATR");
+      if (chart) {
+        const series = chart.addLineSeries({
+          color: "#f59e0b",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        atrChartRef.current = chart;
+        atrRef.current = series;
+      }
+    }
+
+    if (showRsi) {
+      const chart = createIndicatorChart(rsiContainerRef.current, "RSI");
+      if (chart) {
+        const series = chart.addLineSeries({
+          color: "#38bdf8",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const overbought = chart.addLineSeries({
+          color: "rgba(248,113,113,0.55)",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        const oversold = chart.addLineSeries({
+          color: "rgba(34,197,94,0.55)",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        overbought.setData(chartData.map((candle) => ({ time: candle.time, value: 70 })));
+        oversold.setData(chartData.map((candle) => ({ time: candle.time, value: 30 })));
+        series.applyOptions({
+          autoscaleInfoProvider: () => ({
+            priceRange: { minValue: 0, maxValue: 100 },
+          }),
+        });
+        rsiChartRef.current = chart;
+        rsiRef.current = series;
+      }
+    }
+
+    return () => {
+      indicatorCharts.forEach(({ ref, series }) => {
+        if (ref.current) {
+          ref.current.remove();
+        }
+        ref.current = null;
+        series.current = null;
+      });
+    };
+  }, [showVolume, showAtr, showRsi, chartData]);
+
+  useEffect(() => {
+    if (volumeRef.current) {
+      volumeRef.current.setData(validValueSeries(volumeData));
+    }
+    if (atrRef.current) {
+      atrRef.current.setData(validValueSeries(atrData));
+    }
+    if (rsiRef.current) {
+      rsiRef.current.setData(validValueSeries(rsiData));
+    }
+  }, [volumeData, atrData, rsiData, showVolume, showAtr, showRsi]);
 
   useEffect(() => {
     if (!chartRef.current || !containerRef.current) return;
@@ -791,10 +875,44 @@ export default function ChartPanel({
   }, []);
 
   useEffect(() => {
+    const entries = [
+      { container: volumeContainerRef.current, chart: volumeChartRef.current },
+      { container: atrContainerRef.current, chart: atrChartRef.current },
+      { container: rsiContainerRef.current, chart: rsiChartRef.current },
+    ].filter((entry) => entry.container && entry.chart);
+    if (!entries.length) return undefined;
+    const resizeAll = () => {
+      entries.forEach(({ container, chart }) => {
+        chart.applyOptions({
+          width: container.clientWidth,
+          height: container.clientHeight,
+        });
+      });
+    };
+    const observer = new ResizeObserver(resizeAll);
+    entries.forEach(({ container }) => observer.observe(container));
+    resizeAll();
+    return () => observer.disconnect();
+  }, [showVolume, showAtr, showRsi]);
+
+  useEffect(() => {
     if (!chartRef.current) return;
-    chartRef.current.priceScale("volume").applyOptions({ visible: false });
-    chartRef.current.priceScale("atr").applyOptions({ visible: false });
-    chartRef.current.priceScale("rsi").applyOptions({ visible: false });
+    const indicatorCharts = () =>
+      [volumeChartRef.current, atrChartRef.current, rsiChartRef.current].filter(Boolean);
+    const syncRange = (range) => {
+      if (!range) return;
+      indicatorCharts().forEach((chart) => {
+        chart.timeScale().setVisibleRange(range);
+      });
+    };
+    chartRef.current.timeScale().subscribeVisibleTimeRangeChange(syncRange);
+    const currentRange = chartRef.current.timeScale().getVisibleRange();
+    if (currentRange) syncRange(currentRange);
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.timeScale().unsubscribeVisibleTimeRangeChange(syncRange);
+      }
+    };
   }, [showVolume, showAtr, showRsi]);
 
   useEffect(() => {
@@ -1366,62 +1484,86 @@ export default function ChartPanel({
   }, [activeOrder, onMoveStopToBreakeven, onNudgeStop, onNudgeTake]);
 
   return (
-    <div className="chart-panel" ref={containerRef} style={{ height }}>
-      {decisionSummary ? (
-        <div className={`chart-decision-card ${decisionSummary.side.toLowerCase()}`}>
-          <div className="chart-decision-head">
-            <strong>{decisionSummary.side}</strong>
-            <span>Conf {decisionSummary.confidence}%</span>
+    <div className="chart-workspace" style={{ height }}>
+      <div className="chart-panel" ref={containerRef} style={{ height: mainChartHeight }}>
+        {decisionSummary ? (
+          <div className={`chart-decision-card ${decisionSummary.side.toLowerCase()}`}>
+            <div className="chart-decision-head">
+              <strong>{decisionSummary.side}</strong>
+              <span>Conf {decisionSummary.confidence}%</span>
+            </div>
+            <div className="chart-decision-grid">
+              <span>4H Trend <b>{decisionSummary.trend}</b></span>
+              <span>RR <b>1:{formatCompact(decisionSummary.rr, 1)}</b></span>
+              <span>1H RSI <b>{formatCompact(decisionSummary.rsi, 1)}</b></span>
+              <span>Stoch <b>{formatCompact(decisionSummary.stochK, 0)}/{formatCompact(decisionSummary.stochD, 0)}</b></span>
+            </div>
+            <div className="chart-decision-reason">{decisionSummary.reason}</div>
           </div>
-          <div className="chart-decision-grid">
-            <span>4H Trend <b>{decisionSummary.trend}</b></span>
-            <span>RR <b>1:{formatCompact(decisionSummary.rr, 1)}</b></span>
-            <span>1H RSI <b>{formatCompact(decisionSummary.rsi, 1)}</b></span>
-            <span>Stoch <b>{formatCompact(decisionSummary.stochK, 0)}/{formatCompact(decisionSummary.stochD, 0)}</b></span>
+        ) : null}
+        {isDraggingStop ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 14,
+              right: 14,
+              zIndex: 7,
+              padding: "6px 10px",
+              borderRadius: 8,
+              background: "rgba(239,68,68,.18)",
+              border: "1px solid rgba(239,68,68,.45)",
+              color: "#fecaca",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: ".3px",
+            }}
+          >
+            {dragStateRef.current.kind === "take" ? "TP" : "SL"} DRAG ACTIVE{" "}
+            {Number.isFinite(dragStopPrice) ? `· ${Number(dragStopPrice).toFixed(6)}` : ""}
           </div>
-          <div className="chart-decision-reason">{decisionSummary.reason}</div>
+        ) : null}
+        {activeOrder ? (
+          <div
+            style={{
+              position: "absolute",
+              left: 14,
+              bottom: 14,
+              zIndex: 7,
+              padding: "6px 10px",
+              borderRadius: 8,
+              background: "rgba(8,14,24,.78)",
+              border: "1px solid rgba(148,163,184,.2)",
+              color: "#cbd5e1",
+              fontSize: 11,
+            }}
+          >
+            Hotkeys: <strong>Alt+↑/↓</strong> SL, <strong>Shift+↑/↓</strong> TP, <strong>B</strong> = BE
+          </div>
+        ) : null}
+        <canvas className="chart-overlay" ref={overlayRef} />
+      </div>
+      {visibleIndicatorCount > 0 ? (
+        <div className="chart-indicator-stack">
+          {showRsi ? (
+            <div className="indicator-pane">
+              <div className="indicator-pane-label">RSI 14 <span>30 / 70</span></div>
+              <div className="indicator-chart" ref={rsiContainerRef} />
+            </div>
+          ) : null}
+          {showAtr ? (
+            <div className="indicator-pane">
+              <div className="indicator-pane-label">ATR <span>волатильность</span></div>
+              <div className="indicator-chart" ref={atrContainerRef} />
+            </div>
+          ) : null}
+          {showVolume ? (
+            <div className="indicator-pane">
+              <div className="indicator-pane-label">Volume <span>объем</span></div>
+              <div className="indicator-chart" ref={volumeContainerRef} />
+            </div>
+          ) : null}
         </div>
       ) : null}
-      {isDraggingStop ? (
-        <div
-          style={{
-            position: "absolute",
-            top: 14,
-            right: 14,
-            zIndex: 7,
-            padding: "6px 10px",
-            borderRadius: 8,
-            background: "rgba(239,68,68,.18)",
-            border: "1px solid rgba(239,68,68,.45)",
-            color: "#fecaca",
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: ".3px",
-          }}
-        >
-          {dragStateRef.current.kind === "take" ? "TP" : "SL"} DRAG ACTIVE{" "}
-          {Number.isFinite(dragStopPrice) ? `· ${Number(dragStopPrice).toFixed(6)}` : ""}
-        </div>
-      ) : null}
-      {activeOrder ? (
-        <div
-          style={{
-            position: "absolute",
-            left: 14,
-            bottom: 14,
-            zIndex: 7,
-            padding: "6px 10px",
-            borderRadius: 8,
-            background: "rgba(8,14,24,.78)",
-            border: "1px solid rgba(148,163,184,.2)",
-            color: "#cbd5e1",
-            fontSize: 11,
-          }}
-        >
-          Hotkeys: <strong>Alt+↑/↓</strong> SL, <strong>Shift+↑/↓</strong> TP, <strong>B</strong> = BE
-        </div>
-      ) : null}
-      <canvas className="chart-overlay" ref={overlayRef} />
     </div>
   );
 }
